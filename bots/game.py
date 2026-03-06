@@ -20,7 +20,7 @@ GRID_HEIGHT = HEIGHT // TILE_SIZE
 PLAYER_RADIUS = 12
 PLAYER_SPEED = 220
 
-TILE_TYPES = {"grass", "sand", "water", "forest", "home", "road"}
+TILE_TYPES = {"grass", "sand", "water", "forest", "home", "road", "crate"}
 TILE_COLORS = {
     "grass": (80, 170, 80),
     "sand": (220, 200, 120),
@@ -28,6 +28,7 @@ TILE_COLORS = {
     "forest": (30, 110, 30),
     "home": (190, 120, 90),
     "road": (120, 120, 120),
+    "crate": (200, 50, 50),
 }
 
 TILE_DESCRIPTIONS = {
@@ -37,6 +38,7 @@ TILE_DESCRIPTIONS = {
     "forest": "Dense trees and undergrowth.",
     "home": "A small dwelling.",
     "road": "A well-trodden dirt path.",
+    "crate": "A mysterious red crate. It might contain energy cells.",
 }
 
 
@@ -49,10 +51,14 @@ class Tile:
     description: str = field(default="A flat patch of green grass.")
 
 
-player_x = WIDTH // 2
-player_y = HEIGHT // 2
+player_x = random.randint(PLAYER_RADIUS, WIDTH - PLAYER_RADIUS)
+player_y = random.randint(PLAYER_RADIUS, HEIGHT - PLAYER_RADIUS)
+player_energy = 1000
+player_inventory: list[dict[str, Any]] = []
 
 tiles: dict[tuple[int, int], str] = {}
+# Crate contents: maps (x, y) -> {"energy": int, "opened": bool}
+crate_contents: dict[tuple[int, int], dict[str, Any]] = {}
 tile_matrix: list[list[Tile]] = [
     [Tile(x=x, y=y, type="grass") for y in range(GRID_HEIGHT)]
     for x in range(GRID_WIDTH)
@@ -203,6 +209,22 @@ def _build_scenery_procedural() -> None:
     total += n
     print(f"  Pond: done")
 
+    # --- Random crates with energy ---
+    crates_placed = 0
+    while crates_placed < 10:
+        cx = random.randint(2, GRID_WIDTH - 3)
+        cy = random.randint(2, GRID_HEIGHT - 3)
+        # Only place on grass
+        if tiles.get((cx, cy)) == "grass":
+            CreateTile(cx, cy, "crate")
+            crate_contents[(cx, cy)] = {
+                "energy": random.randint(0, 100),
+                "opened": False,
+            }
+            crates_placed += 1
+            total += 1
+    print(f"  Crates: placed {crates_placed} crates")
+
     elapsed = time.time() - t0
     print(f"Procedural map complete: {total} non-grass tiles in {elapsed:.3f}s")
 
@@ -254,14 +276,28 @@ _DIRECTION_DELTAS = {
 }
 
 
+def _consume_energy(amount: int = 1) -> None:
+    """Decrease player energy by amount."""
+    global player_energy
+    player_energy = max(0, player_energy - amount)
+
+
+def _player_grid_pos() -> tuple[int, int]:
+    """Return the player's current tile grid position."""
+    gx = max(0, min(GRID_WIDTH - 1, int(player_x) // TILE_SIZE))
+    gy = max(0, min(GRID_HEIGHT - 1, int(player_y) // TILE_SIZE))
+    return gx, gy
+
+
 def Move(direction: str) -> dict[str, Any]:
     """Move the player one tile step in one of 8 directions."""
     global player_x, player_y
+    _consume_energy(1)
     direction = direction.lower().strip()
     if direction not in _DIRECTION_DELTAS:
         msg = f"Unknown direction '{direction}'. Use: {', '.join(_DIRECTION_DELTAS)}"
         print(f"  [Move] ERROR: {msg}")
-        return {"ok": False, "error": msg}
+        return {"ok": False, "error": msg, "energy": player_energy}
 
     dx, dy = _DIRECTION_DELTAS[direction]
     new_x = player_x + dx * TILE_SIZE
@@ -274,15 +310,10 @@ def Move(direction: str) -> dict[str, Any]:
     player_x = new_x
     player_y = new_y
 
-    # Report the tile we landed on
-    grid_x = int(player_x) // TILE_SIZE
-    grid_y = int(player_y) // TILE_SIZE
-    grid_x = max(0, min(GRID_WIDTH - 1, grid_x))
-    grid_y = max(0, min(GRID_HEIGHT - 1, grid_y))
+    grid_x, grid_y = _player_grid_pos()
     landed = tile_matrix[grid_x][grid_y]
 
-    print(f"  [Move] Moved {direction} → pixel ({player_x:.0f}, {player_y:.0f}), "
-          f"tile ({grid_x}, {grid_y}) = {landed.type}: {landed.description}")
+    print(f"  [Move] Moved {direction} → tile ({grid_x}, {grid_y}) = {landed.type}: {landed.description}")
 
     return {
         "ok": True,
@@ -293,15 +324,14 @@ def Move(direction: str) -> dict[str, Any]:
         "tile_y": grid_y,
         "tile_type": landed.type,
         "tile_description": landed.description,
+        "energy": player_energy,
     }
 
 
 def GetInfo() -> dict[str, Any]:
     """Read the tiles surrounding the player (3x3 grid centered on player)."""
-    grid_x = int(player_x) // TILE_SIZE
-    grid_y = int(player_y) // TILE_SIZE
-    grid_x = max(0, min(GRID_WIDTH - 1, grid_x))
-    grid_y = max(0, min(GRID_HEIGHT - 1, grid_y))
+    _consume_energy(1)
+    grid_x, grid_y = _player_grid_pos()
 
     surrounding: list[dict[str, Any]] = []
     with tiles_lock:
@@ -327,6 +357,68 @@ def GetInfo() -> dict[str, Any]:
         "player_tile_x": grid_x,
         "player_tile_y": grid_y,
         "surrounding": surrounding,
+        "energy": player_energy,
+    }
+
+
+def OpenCrate() -> dict[str, Any]:
+    """Open the crate on the player's current tile (if any)."""
+    _consume_energy(1)
+    gx, gy = _player_grid_pos()
+    crate = crate_contents.get((gx, gy))
+
+    if crate is None:
+        msg = f"No crate at tile ({gx}, {gy})."
+        print(f"  [OpenCrate] {msg}")
+        return {"ok": False, "error": msg, "energy": player_energy}
+
+    if crate["opened"]:
+        msg = f"Crate at ({gx}, {gy}) is already open. Energy inside: {crate['energy']}."
+        print(f"  [OpenCrate] {msg}")
+        return {"ok": True, "already_opened": True, "energy_inside": crate["energy"],
+                "energy": player_energy}
+
+    crate["opened"] = True
+    print(f"  [OpenCrate] Opened crate at ({gx}, {gy}) — contains {crate['energy']} energy!")
+    return {
+        "ok": True,
+        "already_opened": False,
+        "energy_inside": crate["energy"],
+        "tile_x": gx,
+        "tile_y": gy,
+        "energy": player_energy,
+    }
+
+
+def TakeAllFromCrate() -> dict[str, Any]:
+    """Take all energy from the opened crate on the player's current tile."""
+    global player_energy
+    _consume_energy(1)
+    gx, gy = _player_grid_pos()
+    crate = crate_contents.get((gx, gy))
+
+    if crate is None:
+        msg = f"No crate at tile ({gx}, {gy})."
+        print(f"  [TakeAllFromCrate] {msg}")
+        return {"ok": False, "error": msg, "energy": player_energy}
+
+    if not crate["opened"]:
+        msg = f"Crate at ({gx}, {gy}) is not opened yet. Use OpenCrate first."
+        print(f"  [TakeAllFromCrate] {msg}")
+        return {"ok": False, "error": msg, "energy": player_energy}
+
+    gained = crate["energy"]
+    crate["energy"] = 0
+    player_energy += gained
+
+    print(f"  [TakeAllFromCrate] Took {gained} energy from crate at ({gx}, {gy}). "
+          f"Player energy now: {player_energy}")
+    return {
+        "ok": True,
+        "energy_gained": gained,
+        "energy": player_energy,
+        "tile_x": gx,
+        "tile_y": gy,
     }
 
 
@@ -334,6 +426,8 @@ def GetInfo() -> dict[str, Any]:
 _TOOL_DISPATCH: dict[str, Any] = {
     "Move": Move,
     "GetInfo": GetInfo,
+    "OpenCrate": OpenCrate,
+    "TakeAllFromCrate": TakeAllFromCrate,
 }
 
 # Ollama tool definitions for tool-calling API
@@ -344,7 +438,8 @@ _OLLAMA_TOOLS = [
             "name": "Move",
             "description": (
                 "Move the player one tile step in one of 8 compass directions. "
-                "Allowed directions: north, south, east, west, northeast, northwest, southeast, southwest."
+                "Allowed directions: north, south, east, west, northeast, northwest, southeast, southwest. "
+                "Costs 1 energy."
             ),
             "parameters": {
                 "type": "object",
@@ -364,7 +459,41 @@ _OLLAMA_TOOLS = [
             "name": "GetInfo",
             "description": (
                 "Look around: returns the 3x3 grid of tiles surrounding the player, "
-                "including coordinates, tile type and description for each."
+                "including coordinates, tile type and description for each. "
+                "Costs 1 energy."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "OpenCrate",
+            "description": (
+                "Open the crate on the player's current tile. "
+                "The crate must be a 'crate' tile. Reveals how much energy is inside. "
+                "Costs 1 energy."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "TakeAllFromCrate",
+            "description": (
+                "Take all energy from the opened crate on the player's current tile. "
+                "The crate must have been opened first with OpenCrate. "
+                "Adds the crate's energy to the player's energy. "
+                "Costs 1 energy."
             ),
             "parameters": {
                 "type": "object",
@@ -376,17 +505,47 @@ _OLLAMA_TOOLS = [
 ]
 
 _PLAY_BASE_PROMPT = (
-    "You are an AI explorer controlling a character in a 2D tile-based RPG world. "
+    "You are a robot explorer in a 2D tile-based RPG world. "
     f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
-    "Your goal is to explore the map, survive, and discover interesting locations. "
-    "You can see what is around you with GetInfo and move with Move. "
-    "Available tile types: grass, sand, water, forest, home, road. "
-    "Water is dangerous — avoid stepping on it. "
-    "Roads are safe and fast. Homes are places to rest. Forests may hide things. "
-    "Start by looking around with GetInfo, then decide where to go. "
+    "You run on battery. Your starting energy is 1000. "
+    "Every action (Move, GetInfo, OpenCrate, TakeAllFromCrate) costs 1 energy. "
+    "If your energy reaches 0 you shut down — game over! "
+    "\n\nAvailable tools:\n"
+    "- GetInfo: look around (3x3 tile grid). Use this often to see what's nearby.\n"
+    "- Move(direction): move one tile in 8 directions (north/south/east/west/ne/nw/se/sw).\n"
+    "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
+    "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
+    "\nTile types: grass, sand, water, forest, home, road, crate. "
+    "Water is dangerous — avoid it. "
+    "Roads are safe. Homes are rest points. Forests may hide things. "
+    "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
+    "\n\nStrategy: look around with GetInfo, move toward crates, open them, take the energy. "
+    "Explore efficiently to conserve battery. "
     "Always explain your reasoning briefly before calling a tool. "
     "Keep exploring — don't stop!"
 )
+
+
+def _print_step_status() -> None:
+    """Print the player's current surroundings, energy, and inventory."""
+    gx, gy = _player_grid_pos()
+    print(f"\n  === STATUS ===")
+    print(f"  Energy: {player_energy}  |  Position: tile ({gx}, {gy})")
+    print(f"  Inventory: {player_inventory if player_inventory else '(empty)'}")
+    print(f"  Surroundings:")
+    with tiles_lock:
+        for dy in range(-1, 2):
+            row = []
+            for dx in range(-1, 2):
+                nx, ny = gx + dx, gy + dy
+                if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
+                    t = tile_matrix[nx][ny]
+                    marker = "*" if dx == 0 and dy == 0 else " "
+                    row.append(f"{marker}{t.type:>7}({nx},{ny})")
+                else:
+                    row.append("     [OOB]    ")
+            print(f"    {'  '.join(row)}")
+    print(f"  ==============\n")
 
 
 def _run_ollama_play_loop() -> None:
@@ -477,6 +636,14 @@ def _run_ollama_play_loop() -> None:
                 "role": "tool",
                 "content": json.dumps(result),
             })
+
+        # --- Print status after each step ---
+        _print_step_status()
+
+        # Check for death
+        if player_energy <= 0:
+            print("\n  *** ROBOT SHUT DOWN — OUT OF ENERGY ***")
+            break
 
         # Small delay to avoid hammering Ollama
         time.sleep(0.5)
