@@ -66,6 +66,8 @@ class Tile:
 
 bot_x = random.randint(BOT_RADIUS, WIDTH - BOT_RADIUS)
 bot_y = random.randint(BOT_RADIUS, HEIGHT - BOT_RADIUS)
+bot_target_x: float = bot_x
+bot_target_y: float = bot_y
 bot_energy = 1000
 bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"  # Waiting | Thinking | Moving | LookClose | LookFar | Charging
@@ -310,15 +312,15 @@ def _consume_energy(amount: int = 1) -> None:
 
 
 def _bot_grid_pos() -> tuple[int, int]:
-    """Return the bot's current tile grid position."""
-    gx = max(0, min(GRID_WIDTH - 1, int(bot_x) // TILE_SIZE))
-    gy = max(0, min(GRID_HEIGHT - 1, int(bot_y) // TILE_SIZE))
+    """Return the bot's logical tile grid position (based on target)."""
+    gx = max(0, min(GRID_WIDTH - 1, int(bot_target_x) // TILE_SIZE))
+    gy = max(0, min(GRID_HEIGHT - 1, int(bot_target_y) // TILE_SIZE))
     return gx, gy
 
 
 def Move(direction: str, distance: int = 1) -> dict[str, Any]:
     """Move the bot 1-10 tile steps in one of 8 directions, limited by terrain."""
-    global bot_x, bot_y
+    global bot_target_x, bot_target_y
     _consume_energy(1)
     direction = direction.lower().strip()
     if direction not in _DIRECTION_DELTAS:
@@ -344,9 +346,10 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
 
     # Step tile-by-tile, stopping before water
     steps_taken = 0
+    new_x, new_y = bot_target_x, bot_target_y
     for _ in range(actual_distance):
-        next_x = bot_x + dx * TILE_SIZE
-        next_y = bot_y + dy * TILE_SIZE
+        next_x = new_x + dx * TILE_SIZE
+        next_y = new_y + dy * TILE_SIZE
         next_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, next_x))
         next_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, next_y))
         # Check what tile we'd land on
@@ -356,9 +359,12 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
         if next_tile.type == "water":
             print(f"  [Move] Stopped before water at ({next_gx}, {next_gy})")
             break
-        bot_x = next_x
-        bot_y = next_y
+        new_x = next_x
+        new_y = next_y
         steps_taken += 1
+
+    bot_target_x = new_x
+    bot_target_y = new_y
 
     grid_x, grid_y = _bot_grid_pos()
     landed = tile_matrix[grid_x][grid_y]
@@ -378,8 +384,8 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
         "distance_requested": distance,
         "distance_moved": steps_taken,
         "terrain_limit": terrain_limit,
-        "bot_x": bot_x,
-        "bot_y": bot_y,
+        "bot_x": bot_target_x,
+        "bot_y": bot_target_y,
         "tile_x": grid_x,
         "tile_y": grid_y,
         "tile_type": landed.type,
@@ -449,7 +455,7 @@ def LookFar() -> dict[str, Any]:
     """Scan a wide area (radius 10) and return notable features with direction and distance."""
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
-    radius = 10
+    radius = 20
 
     features: list[dict[str, Any]] = []
     with tiles_lock:
@@ -544,6 +550,7 @@ def TakeAllFromCrate() -> dict[str, Any]:
 
     print(f"  [TakeAllFromCrate] Took {gained} energy from crate at ({gx}, {gy}). "
           f"Bot energy now: {bot_energy}")
+    time.sleep(gained/10)
     return {
         "ok": True,
         "energy_gained": gained,
@@ -620,7 +627,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "LookFar",
             "description": (
-                "Wide-area scan: looks in a radius of 10 tiles around the bot and "
+                "Wide-area scan: looks in a radius of 20 tiles around the bot and "
                 "returns a list of notable features (forest, home, road, crate) with "
                 "their compass direction, type, and distance. "
                 "Great for planning where to go next. Costs 1 energy."
@@ -675,7 +682,7 @@ _PLAY_BASE_PROMPT = (
     "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
     "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-    "- LookFar: wide scan (radius 10). Returns notable features (forest, home, road, crate) "
+    "- LookFar: wide scan (radius 20). Returns notable features (forest, home, road, crate) "
     "with direction and distance. Use this to plan your route!\n"
     "- Move(direction, distance): move 1-10 tiles in 8 directions (north/south/east/west/ne/nw/se/sw). "
     "Distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
@@ -762,7 +769,7 @@ def _run_ollama_play_loop() -> None:
         # Print any text the model said
         content = msg.get("content", "") or ""
         if content.strip():
-            print(f"  [Bot] {content.strip()}")
+            print(f"  [🤖] {content.strip()}")
 
         messages.append(msg)
 
@@ -835,8 +842,9 @@ def _start_scenery_generation() -> None:
 
 
 def update(dt: float) -> None:
-    global bot_x, bot_y
+    global bot_x, bot_y, bot_target_x, bot_target_y, bot_state
 
+    # --- Keyboard: move the target directly ---
     dx = 0
     dy = 0
 
@@ -849,11 +857,29 @@ def update(dt: float) -> None:
     if keyboard.d:
         dx += 1
 
-    bot_x += dx * BOT_SPEED * dt
-    bot_y += dy * BOT_SPEED * dt
+    if dx or dy:
+        bot_target_x += dx * BOT_SPEED * dt
+        bot_target_y += dy * BOT_SPEED * dt
+        bot_target_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, bot_target_x))
+        bot_target_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, bot_target_y))
 
-    bot_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, bot_x))
-    bot_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, bot_y))
+    # --- Smoothly move visual position toward target ---
+    move_speed = TILE_SIZE * 2  # 2 tiles per second
+    diff_x = bot_target_x - bot_x
+    diff_y = bot_target_y - bot_y
+    dist = (diff_x ** 2 + diff_y ** 2) ** 0.5
+
+    if dist > 0.5:
+        bot_state = "Moving"
+        step = move_speed * dt
+        if step >= dist:
+            bot_x = bot_target_x
+            bot_y = bot_target_y
+        else:
+            bot_x += (diff_x / dist) * step
+            bot_y += (diff_y / dist) * step
+    elif bot_state == "Moving":
+        bot_state = "Waiting"
 
 
 def draw() -> None:
@@ -891,7 +917,7 @@ def draw() -> None:
     sprite = _SPRITE_SHEET.subsurface(src_rect)
 
     # Scale sprite to fit BOT_RADIUS * 2
-    draw_size = BOT_RADIUS * 4
+    draw_size = BOT_RADIUS * 6
     scaled = pygame.transform.smoothscale(sprite, (draw_size, draw_size))
 
     # Blit centered on bot position
