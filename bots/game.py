@@ -41,6 +41,17 @@ TILE_DESCRIPTIONS = {
     "crate": "A mysterious red crate. It might contain energy cells.",
 }
 
+# Maximum move distance allowed FROM each tile type
+TILE_MAX_DISTANCE: dict[str, int] = {
+    "grass": 5,
+    "sand": 5,
+    "water": 0,
+    "forest": 1,
+    "home": 5,
+    "road": 10,
+    "crate": 5,
+}
+
 
 @dataclass
 class Tile:
@@ -289,8 +300,8 @@ def _player_grid_pos() -> tuple[int, int]:
     return gx, gy
 
 
-def Move(direction: str) -> dict[str, Any]:
-    """Move the player one tile step in one of 8 directions."""
+def Move(direction: str, distance: int = 1) -> dict[str, Any]:
+    """Move the player 1-10 tile steps in one of 8 directions, limited by terrain."""
     global player_x, player_y
     _consume_energy(1)
     direction = direction.lower().strip()
@@ -299,25 +310,58 @@ def Move(direction: str) -> dict[str, Any]:
         print(f"  [Move] ERROR: {msg}")
         return {"ok": False, "error": msg, "energy": player_energy}
 
+    distance = max(1, min(10, int(distance)))
     dx, dy = _DIRECTION_DELTAS[direction]
-    new_x = player_x + dx * TILE_SIZE
-    new_y = player_y + dy * TILE_SIZE
 
-    # Bounds check
-    new_x = max(PLAYER_RADIUS, min(WIDTH - PLAYER_RADIUS, new_x))
-    new_y = max(PLAYER_RADIUS, min(HEIGHT - PLAYER_RADIUS, new_y))
+    # Check terrain speed limit at starting tile
+    start_gx, start_gy = _player_grid_pos()
+    start_tile = tile_matrix[start_gx][start_gy]
+    terrain_limit = TILE_MAX_DISTANCE.get(start_tile.type, 5)
+    if terrain_limit == 0:
+        msg = (f"Cannot move — stuck on {start_tile.type} at ({start_gx}, {start_gy})! "
+               f"You should not be on water.")
+        print(f"  [Move] BLOCKED: {msg}")
+        return {"ok": False, "error": msg, "energy": player_energy,
+                "tile_x": start_gx, "tile_y": start_gy, "tile_type": start_tile.type}
 
-    player_x = new_x
-    player_y = new_y
+    actual_distance = min(distance, terrain_limit)
+
+    # Step tile-by-tile, stopping before water
+    steps_taken = 0
+    for _ in range(actual_distance):
+        next_x = player_x + dx * TILE_SIZE
+        next_y = player_y + dy * TILE_SIZE
+        next_x = max(PLAYER_RADIUS, min(WIDTH - PLAYER_RADIUS, next_x))
+        next_y = max(PLAYER_RADIUS, min(HEIGHT - PLAYER_RADIUS, next_y))
+        # Check what tile we'd land on
+        next_gx = max(0, min(GRID_WIDTH - 1, int(next_x) // TILE_SIZE))
+        next_gy = max(0, min(GRID_HEIGHT - 1, int(next_y) // TILE_SIZE))
+        next_tile = tile_matrix[next_gx][next_gy]
+        if next_tile.type == "water":
+            print(f"  [Move] Stopped before water at ({next_gx}, {next_gy})")
+            break
+        player_x = next_x
+        player_y = next_y
+        steps_taken += 1
 
     grid_x, grid_y = _player_grid_pos()
     landed = tile_matrix[grid_x][grid_y]
 
-    print(f"  [Move] Moved {direction} → tile ({grid_x}, {grid_y}) = {landed.type}: {landed.description}")
+    if steps_taken < distance:
+        reason = (f"terrain limit ({start_tile.type}={terrain_limit})"
+                  if actual_distance < distance else "water ahead")
+        print(f"  [Move] Moved {direction} {steps_taken}/{distance} tiles ({reason}) "
+              f"→ ({grid_x}, {grid_y}) = {landed.type}")
+    else:
+        print(f"  [Move] Moved {direction} {steps_taken} tiles "
+              f"→ ({grid_x}, {grid_y}) = {landed.type}")
 
     return {
         "ok": True,
         "direction": direction,
+        "distance_requested": distance,
+        "distance_moved": steps_taken,
+        "terrain_limit": terrain_limit,
         "player_x": player_x,
         "player_y": player_y,
         "tile_x": grid_x,
@@ -357,6 +401,77 @@ def GetInfo() -> dict[str, Any]:
         "player_tile_x": grid_x,
         "player_tile_y": grid_y,
         "surrounding": surrounding,
+        "energy": player_energy,
+    }
+
+
+_PANORAMA_TYPES = {"forest", "home", "road", "crate"}
+
+
+def _tile_direction(dx: int, dy: int) -> str:
+    """Return a compass direction string for a delta vector."""
+    if dx == 0 and dy < 0:
+        return "north"
+    if dx == 0 and dy > 0:
+        return "south"
+    if dx > 0 and dy == 0:
+        return "east"
+    if dx < 0 and dy == 0:
+        return "west"
+    if dx > 0 and dy < 0:
+        return "northeast"
+    if dx < 0 and dy < 0:
+        return "northwest"
+    if dx > 0 and dy > 0:
+        return "southeast"
+    if dx < 0 and dy > 0:
+        return "southwest"
+    return "here"
+
+
+def GetPanorama() -> dict[str, Any]:
+    """Scan a wide area (radius 10) and return notable features with direction and distance."""
+    _consume_energy(1)
+    gx, gy = _player_grid_pos()
+    radius = 10
+
+    features: list[dict[str, Any]] = []
+    with tiles_lock:
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                nx, ny = gx + dx, gy + dy
+                if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
+                    continue
+                t = tile_matrix[nx][ny]
+                if t.type in _PANORAMA_TYPES:
+                    dist = max(abs(dx), abs(dy))  # Chebyshev distance
+                    direction = _tile_direction(dx, dy)
+                    features.append({
+                        "direction": direction,
+                        "type": t.type,
+                        "distance": dist,
+                        "x": nx,
+                        "y": ny,
+                    })
+
+    # Deduplicate clusters: keep closest per (direction, type)
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for f in features:
+        key = (f["direction"], f["type"])
+        if key not in best or f["distance"] < best[key]["distance"]:
+            best[key] = f
+    summary = sorted(best.values(), key=lambda f: f["distance"])
+
+    print(f"  [GetPanorama] Scanned radius {radius} from ({gx}, {gy}): "
+          f"found {len(summary)} notable features")
+    for f in summary:
+        print(f"    {f['type']:>7} {f['direction']:<10} dist={f['distance']}  at ({f['x']},{f['y']})")
+
+    return {
+        "ok": True,
+        "player_tile_x": gx,
+        "player_tile_y": gy,
+        "features": summary,
         "energy": player_energy,
     }
 
@@ -426,6 +541,7 @@ def TakeAllFromCrate() -> dict[str, Any]:
 _TOOL_DISPATCH: dict[str, Any] = {
     "Move": Move,
     "GetInfo": GetInfo,
+    "GetPanorama": GetPanorama,
     "OpenCrate": OpenCrate,
     "TakeAllFromCrate": TakeAllFromCrate,
 }
@@ -437,9 +553,10 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "Move",
             "description": (
-                "Move the player one tile step in one of 8 compass directions. "
-                "Allowed directions: north, south, east, west, northeast, northwest, southeast, southwest. "
-                "Costs 1 energy."
+                "Move the player 1-10 tile steps in one of 8 compass directions. "
+                "Actual distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
+                "The limit is based on the tile you START on. Movement also stops before entering water. "
+                "Costs 1 energy regardless of distance."
             ),
             "parameters": {
                 "type": "object",
@@ -447,6 +564,10 @@ _OLLAMA_TOOLS = [
                     "direction": {
                         "type": "string",
                         "description": "The compass direction to move (e.g. 'north', 'southeast').",
+                    },
+                    "distance": {
+                        "type": "integer",
+                        "description": "Number of tiles to move (1-10). Clamped by terrain speed limit. Default is 1.",
                     },
                 },
                 "required": ["direction"],
@@ -461,6 +582,23 @@ _OLLAMA_TOOLS = [
                 "Look around: returns the 3x3 grid of tiles surrounding the player, "
                 "including coordinates, tile type and description for each. "
                 "Costs 1 energy."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "GetPanorama",
+            "description": (
+                "Wide-area scan: looks in a radius of 10 tiles around the player and "
+                "returns a list of notable features (forest, home, road, crate) with "
+                "their compass direction, type, and distance. "
+                "Great for planning where to go next. Costs 1 energy."
             ),
             "parameters": {
                 "type": "object",
@@ -508,18 +646,26 @@ _PLAY_BASE_PROMPT = (
     "You are a robot explorer in a 2D tile-based RPG world. "
     f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
     "You run on battery. Your starting energy is 1000. "
-    "Every action (Move, GetInfo, OpenCrate, TakeAllFromCrate) costs 1 energy. "
-    "If your energy reaches 0 you shut down — game over! "
+    "Every action (Move, GetInfo, GetPanorama, OpenCrate, TakeAllFromCrate) costs 1 energy. "
+    "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
-    "- GetInfo: look around (3x3 tile grid). Use this often to see what's nearby.\n"
-    "- Move(direction): move one tile in 8 directions (north/south/east/west/ne/nw/se/sw).\n"
+    "- GetInfo: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
+    "- GetPanorama: wide scan (radius 10). Returns notable features (forest, home, road, crate) "
+    "with direction and distance. Use this to plan your route!\n"
+    "- Move(direction, distance): move 1-10 tiles in 8 directions (north/south/east/west/ne/nw/se/sw). "
+    "Distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
+    "The limit is based on the tile you START on. You also stop before entering water. "
+    "Costs only 1 energy regardless of distance, so use roads for fast travel!\n"
     "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
     "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
     "\nTile types: grass, sand, water, forest, home, road, crate. "
     "Water is dangerous — avoid it. "
     "Roads are safe. Homes are rest points. Forests may hide things. "
     "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
-    "\n\nStrategy: look around with GetInfo, move toward crates, open them, take the energy. "
+    "\n\nStrategy: use GetPanorama to find crates and notable features, "
+    "Move(direction, distance=10) on roads for fast travel, distance=5 on grass, "
+    "distance=1 in forests. Avoid water! GetInfo when close, "
+    "then OpenCrate + TakeAllFromCrate to loot energy. "
     "Explore efficiently to conserve battery. "
     "Always explain your reasoning briefly before calling a tool. "
     "Keep exploring — don't stop!"
