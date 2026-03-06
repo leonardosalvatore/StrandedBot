@@ -26,8 +26,8 @@ GRID_WIDTH = MAP_WIDTH // TILE_SIZE
 GRID_HEIGHT = MAP_HEIGHT // TILE_SIZE
 
 # Camera/viewport settings
-VIEWPORT_TILES_W = 50  # Show 50x50 tile area
-VIEWPORT_TILES_H = 50
+VIEWPORT_TILES_W = 70  # Show 70x70 tile area
+VIEWPORT_TILES_H = 70
 DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W  # 50px per tile when rendered
 
 BOT_RADIUS = 10
@@ -73,10 +73,11 @@ class Tile:
     type: str
     color: tuple[int, int, int] = field(default=(80, 170, 80))
     description: str = field(default="A flat patch of green grass.")
+    fog: bool = field(default=True)  # Fog of war
 
 
-bot_x = 300
-bot_y = 300
+bot_x = 600
+bot_y = 600
 bot_target_x: float = bot_x
 bot_target_y: float = bot_y
 bot_energy = 100
@@ -297,6 +298,7 @@ def _initialize_default_tiles() -> None:
                     x=x, y=y, type="grass",
                     color=TILE_COLORS["grass"],
                     description=TILE_DESCRIPTIONS["grass"],
+                    fog=True,
                 )
 
 
@@ -310,10 +312,13 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
     description = TILE_DESCRIPTIONS[type]
 
     with tiles_lock:
+        # Preserve fog state if tile already exists
+        existing_fog = tile_matrix[x][y].fog if (0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT) else True
         tiles[(x, y)] = type
         tile_matrix[x][y] = Tile(
             x=x, y=y, type=type,
             color=color, description=description,
+            fog=existing_fog,
         )
 
     return {"ok": True, "x": x, "y": y, "type": type}
@@ -434,6 +439,8 @@ def LookClose() -> dict[str, Any]:
                 nx, ny = grid_x + dx, grid_y + dy
                 if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
                     t = tile_matrix[nx][ny]
+                    # Reveal tile (remove fog)
+                    t.fog = False
                     label = "center" if dx == 0 and dy == 0 else ""
                     surrounding.append({
                         "x": t.x,
@@ -483,7 +490,7 @@ def LookFar() -> dict[str, Any]:
     """Scan a wide area (radius 50) and return notable features with direction and distance."""
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
-    radius = 50
+    radius = 20
 
     features: list[dict[str, Any]] = []
     with tiles_lock:
@@ -497,6 +504,8 @@ def LookFar() -> dict[str, Any]:
                 if t.type in _PANORAMA_TYPES:
                     dist = max(abs(dx), abs(dy))  # Chebyshev distance
                     direction = _tile_direction(dx, dy)
+                    # Reveal this tile (remove fog)
+                    t.fog = False
                     features.append({
                         "direction": direction,
                         "type": t.type,
@@ -716,7 +725,7 @@ _PLAY_BASE_PROMPT = (
     "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
     "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-    "- LookFar: wide scan (radius 50). Returns notable features (forest, home, road, crate) "
+    "- LookFar: wide scan (radius 20). Returns notable features (forest, home, road, crate) "
     "with direction and distance. Use this to plan your route!\n"
     "- Move(direction, distance): move 1-10 tiles in 8 directions (north/south/east/west/ne/nw/se/sw). "
     "Distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
@@ -949,8 +958,12 @@ def draw() -> None:
     with tiles_lock:
         for tx in range(tile_x_start, tile_x_end):
             for ty in range(tile_y_start, tile_y_end):
-                tile_type = tiles.get((tx, ty), "grass")
-                color = TILE_COLORS[tile_type]
+                t = tile_matrix[tx][ty]
+                # Use gray for fog, normal color if revealed
+                if t.fog:
+                    color = (60, 60, 60)  # Gray fog
+                else:
+                    color = t.color
                 # World position of this tile
                 world_x = tx * TILE_SIZE
                 world_y = ty * TILE_SIZE
