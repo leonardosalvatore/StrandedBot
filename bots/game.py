@@ -76,8 +76,8 @@ class Tile:
     fog: bool = field(default=True)  # Fog of war
 
 
-bot_x = 600
-bot_y = 600
+bot_x = 400
+bot_y = 550
 bot_target_x: float = bot_x
 bot_target_y: float = bot_y
 bot_energy = 100
@@ -325,19 +325,8 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# LLM bot tools: Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate
+# LLM bot tools: MoveTo, LookClose, LookFar, OpenCrate, TakeAllFromCrate
 # ---------------------------------------------------------------------------
-
-_DIRECTION_DELTAS = {
-    "north": (0, -1),
-    "south": (0, 1),
-    "east": (1, 0),
-    "west": (-1, 0),
-    "northeast": (1, -1),
-    "northwest": (-1, -1),
-    "southeast": (1, 1),
-    "southwest": (-1, 1),
-}
 
 
 def _consume_energy(amount: int = 1) -> None:
@@ -353,35 +342,56 @@ def _bot_grid_pos() -> tuple[int, int]:
     return gx, gy
 
 
-def Move(direction: str, distance: int = 1) -> dict[str, Any]:
-    """Move the bot 1-10 tile steps in one of 8 directions, limited by terrain."""
+def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
+    """Move the bot toward an absolute target tile. Respects terrain and water. Steps up to 10 tiles per call."""
     global bot_target_x, bot_target_y
-    direction = direction.lower().strip()
-    if direction not in _DIRECTION_DELTAS:
-        msg = f"Unknown direction '{direction}'. Use: {', '.join(_DIRECTION_DELTAS)}"
-        print(f"  [Move] ERROR: {msg}")
-        return {"ok": False, "error": msg, "energy": bot_energy}
+    target_x = max(0, min(GRID_WIDTH - 1, int(target_x)))
+    target_y = max(0, min(GRID_HEIGHT - 1, int(target_y)))
 
-    distance = max(1, min(10, int(distance)))
-    dx, dy = _DIRECTION_DELTAS[direction]
+    start_gx, start_gy = _bot_grid_pos()
+
+    # If already at target, do nothing
+    if start_gx == target_x and start_gy == target_y:
+        print(f"  [MoveTo] Already at target ({target_x}, {target_y})")
+        return {
+            "ok": True,
+            "target_tile_x": target_x,
+            "target_tile_y": target_y,
+            "steps_taken": 0,
+            "tile_x": start_gx,
+            "tile_y": start_gy,
+            "tile_type": tile_matrix[start_gx][start_gy].type,
+            "energy": bot_energy,
+        }
+
+    # Calculate direction: prioritize X movement first, then Y
+    # This ensures we can reach any target, not just diagonal points
+    curr_gx, curr_gy = start_gx, start_gy
+    
+    # Determine which direction to move in
+    if curr_gx != target_x:
+        # Still need to move X, move toward target_x
+        dx = 1 if target_x > curr_gx else -1
+        dy = 0
+    else:
+        # X is aligned, move toward target_y
+        dx = 0
+        dy = 1 if target_y > curr_gy else -1
 
     # Check terrain speed limit at starting tile
-    start_gx, start_gy = _bot_grid_pos()
     start_tile = tile_matrix[start_gx][start_gy]
     terrain_limit = TILE_MAX_DISTANCE.get(start_tile.type, 5)
     if terrain_limit == 0:
         msg = (f"Cannot move — stuck on {start_tile.type} at ({start_gx}, {start_gy})! "
                f"You should not be on water.")
-        print(f"  [Move] BLOCKED: {msg}")
+        print(f"  [MoveTo] BLOCKED: {msg}")
         return {"ok": False, "error": msg, "energy": bot_energy,
                 "tile_x": start_gx, "tile_y": start_gy, "tile_type": start_tile.type}
 
-    actual_distance = min(distance, terrain_limit)
-
-    # Step tile-by-tile, stopping before water
+    # Step tile-by-tile toward target, up to terrain limit or 10 tiles
     steps_taken = 0
     new_x, new_y = bot_target_x, bot_target_y
-    for _ in range(actual_distance):
+    for step in range(min(10, terrain_limit)):
         _consume_energy(1)
         next_x = new_x + dx * TILE_SIZE
         next_y = new_y + dy * TILE_SIZE
@@ -391,12 +401,24 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
         next_gx = max(0, min(GRID_WIDTH - 1, int(next_x) // TILE_SIZE))
         next_gy = max(0, min(GRID_HEIGHT - 1, int(next_y) // TILE_SIZE))
         next_tile = tile_matrix[next_gx][next_gy]
+        # Reveal this tile as we move through it
+        next_tile.fog = False
         if next_tile.type == "water":
-            print(f"  [Move] Stopped before water at ({next_gx}, {next_gy})")
+            print(f"  [MoveTo] Stopped before water at ({next_gx}, {next_gy})")
             break
         new_x = next_x
         new_y = next_y
         steps_taken += 1
+        
+        # Check if we've reached target in current direction
+        if dx != 0 and next_gx == target_x:
+            # X-aligned with target, now switch to Y-movement
+            print(f"  [MoveTo] X-aligned at ({next_gx}, {next_gy}), switching to Y-movement")
+            break
+        if dy != 0 and next_gy == target_y:
+            # Y-aligned with target, done
+            print(f"  [MoveTo] Reached target ({target_x}, {target_y}) in {steps_taken} steps")
+            break
 
     bot_target_x = new_x
     bot_target_y = new_y
@@ -404,20 +426,14 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
     grid_x, grid_y = _bot_grid_pos()
     landed = tile_matrix[grid_x][grid_y]
 
-    if steps_taken < distance:
-        reason = (f"terrain limit ({start_tile.type}={terrain_limit})"
-                  if actual_distance < distance else "water ahead")
-        print(f"  [Move] Moved {direction} {steps_taken}/{distance} tiles ({reason}) "
-              f"→ ({grid_x}, {grid_y}) = {landed.type}")
-    else:
-        print(f"  [Move] Moved {direction} {steps_taken} tiles "
-              f"→ ({grid_x}, {grid_y}) = {landed.type}")
+    print(f"  [MoveTo] From ({start_gx}, {start_gy}) toward ({target_x}, {target_y}), "
+          f"took {steps_taken} steps → ({grid_x}, {grid_y}) = {landed.type}")
 
     return {
         "ok": True,
-        "direction": direction,
-        "distance_requested": distance,
-        "distance_moved": steps_taken,
+        "target_tile_x": target_x,
+        "target_tile_y": target_y,
+        "steps_taken": steps_taken,
         "terrain_limit": terrain_limit,
         "tile_x": grid_x,
         "tile_y": grid_y,
@@ -465,29 +481,45 @@ def LookClose() -> dict[str, Any]:
 _PANORAMA_TYPES = {"forest", "home", "road", "crate"}
 
 
-def _tile_direction(dx: int, dy: int) -> str:
-    """Return a compass direction string for a delta vector."""
-    if dx == 0 and dy < 0:
-        return "north"
-    if dx == 0 and dy > 0:
-        return "south"
-    if dx > 0 and dy == 0:
-        return "east"
-    if dx < 0 and dy == 0:
-        return "west"
-    if dx > 0 and dy < 0:
-        return "northeast"
-    if dx < 0 and dy < 0:
-        return "northwest"
-    if dx > 0 and dy > 0:
-        return "southeast"
-    if dx < 0 and dy > 0:
-        return "southwest"
-    return "here"
+def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) -> bool:
+    """Check if forests block line of sight between two tiles using Bresenham's line.
+    If blocked by forest, reveal that forest tile."""
+    # Use Bresenham line algorithm to walk from start to end
+    dx = abs(to_x - from_x)
+    dy = abs(to_y - from_y)
+    sx = 1 if from_x < to_x else -1
+    sy = 1 if from_y < to_y else -1
+    
+    x, y = from_x, from_y
+    err = dx - dy
+    
+    while True:
+        # Check if this tile is forest (blocking)
+        if (x, y) != (from_x, from_y):  # Don't block on starting position
+            if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
+                if tile_matrix[x][y].type == "forest":
+                    # Reveal the blocking forest tile
+                    tile_matrix[x][y].fog = False
+                    return True  # Line is blocked by forest
+        
+        # Stop if we reached destination
+        if x == to_x and y == to_y:
+            break
+        
+        # Step along the line
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+    
+    return False  # Line is not blocked
 
 
 def LookFar() -> dict[str, Any]:
-    """Scan a wide area (radius 50) and return notable features with direction and distance."""
+    """Scan a wide area (radius 50) and return notable features with absolute coordinates and distance. Forests block line-of-sight."""
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
     radius = 20
@@ -503,21 +535,22 @@ def LookFar() -> dict[str, Any]:
                 time.sleep(0.001)  # simulate processing time per tile
                 if t.type in _PANORAMA_TYPES:
                     dist = max(abs(dx), abs(dy))  # Chebyshev distance
-                    direction = _tile_direction(dx, dy)
+                    # Check if line of sight is blocked by forests
+                    if _is_line_of_sight_blocked(gx, gy, nx, ny):
+                        continue  # Skip this feature, it's hidden behind forest
                     # Reveal this tile (remove fog)
                     t.fog = False
                     features.append({
-                        "direction": direction,
                         "type": t.type,
                         "distance": dist,
                         "x": nx,
                         "y": ny,
                     })
 
-    # Deduplicate clusters: keep closest per (direction, type)
-    best: dict[tuple[str, str], dict[str, Any]] = {}
+    # Deduplicate clusters: keep closest per type
+    best: dict[str, dict[str, Any]] = {}
     for f in features:
-        key = (f["direction"], f["type"])
+        key = f["type"]
         if key not in best or f["distance"] < best[key]["distance"]:
             best[key] = f
     summary = sorted(best.values(), key=lambda f: f["distance"])
@@ -525,7 +558,7 @@ def LookFar() -> dict[str, Any]:
     print(f"  [LookFar] Scanned radius {radius} from ({gx}, {gy}): "
           f"found {len(summary)} notable features")
     for f in summary:
-        print(f"    {f['type']:>7} {f['direction']:<10} dist={f['distance']}  at ({f['x']},{f['y']})")
+        print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']}")
 
     return {
         "ok": True,
@@ -602,9 +635,8 @@ def TakeAllFromCrate() -> dict[str, Any]:
     }
 
 
-# Tool dispatch table
 _TOOL_DISPATCH: dict[str, Any] = {
-    "Move": Move,
+    "MoveTo": MoveTo,
     "LookClose": LookClose,
     "LookFar": LookFar,
     "OpenCrate": OpenCrate,
@@ -613,7 +645,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
 
 # Map tool name -> bot_state to set before calling
 _TOOL_STATE: dict[str, str] = {
-    "Move": "Moving",
+    "MoveTo": "Moving",
     "LookClose": "LookClose",
     "LookFar": "LookFar",
     "OpenCrate": "LookClose",
@@ -625,26 +657,26 @@ _OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "Move",
+            "name": "MoveTo",
             "description": (
-                "Move the bot 1-10 tile steps in one of 8 compass directions. "
-                "Actual distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
-                "The limit is based on the tile you START on. Movement also stops before entering water. "
-                "Costs 1 energy regardless of distance."
+                "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
+                "The bot will move up to 10 tiles per call, respecting terrain limits and water barriers. "
+                "Terrain limits: road=10 tiles, grass/sand/home/crate=5 tiles, forest=1 tile, water=blocked. "
+                "Costs 1 energy per tile of movement."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "direction": {
-                        "type": "string",
-                        "description": "The compass direction to move (e.g. 'north', 'southeast').",
-                    },
-                    "distance": {
+                    "target_x": {
                         "type": "integer",
-                        "description": "Number of tiles to move (1-10). Clamped by terrain speed limit. Default is 1.",
+                        "description": "Target tile X coordinate (0 to 99).",
+                    },
+                    "target_y": {
+                        "type": "integer",
+                        "description": "Target tile Y coordinate (0 to 79).",
                     },
                 },
-                "required": ["direction"],
+                "required": ["target_x", "target_y"],
             },
         },
     },
@@ -671,7 +703,8 @@ _OLLAMA_TOOLS = [
             "description": (
                 "Wide-area scan: looks in a radius of 50 tiles around the bot and "
                 "returns a list of notable features (forest, home, road, crate) with "
-                "their compass direction, type, and distance. "
+                "their absolute tile coordinates (x, y), type, and distance. "
+                "Forests block line-of-sight, so features hidden behind forests won't be visible. "
                 "Great for planning where to go next. Costs 1 energy."
             ),
             "parameters": {
@@ -727,10 +760,10 @@ _PLAY_BASE_PROMPT = (
     "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
     "- LookFar: wide scan (radius 20). Returns notable features (forest, home, road, crate) "
     "with direction and distance. Use this to plan your route!\n"
-    "- Move(direction, distance): move 1-10 tiles in 8 directions (north/south/east/west/ne/nw/se/sw). "
-    "Distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
-    "The limit is based on the tile you START on. You also stop before entering water. "
-    "Costs only 1 energy regardless of distance, so use roads for fast travel!\n"
+    "- MoveTo(target_x, target_y): move toward absolute target tile. Specify (x, y) grid coordinates. "
+    "Moves up to 10 tiles per call, respecting terrain limits and water barriers. "
+    "Terrain speed limits: road=10 tiles/call, grass/sand/home/crate=5 tiles/call, forest=1 tile/call, water=blocked. "
+    "Terrain limit is based on your STARTING tile.\n"
     "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
     "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
     "\nTile types: grass, sand, water, forest, home, road, crate. "
@@ -738,8 +771,8 @@ _PLAY_BASE_PROMPT = (
     "Roads are safe. Homes are rest points. Forests may hide things. "
     "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
     "\n\nStrategy: use LookFar to find crates and notable features, "
-    "Move(direction, distance=10) on roads for fast travel, distance=5 on grass, "
-    "distance=1 in forests. Avoid water! LookClose when close, "
+    "MoveTo(x, y) with distant targets on roads for fast travel, moderate distances on grass, "
+    "single tiles in forests. Avoid water! LookClose when close, "
     "then OpenCrate + TakeAllFromCrate to loot energy. "
     "Explore efficiently to conserve battery. "
     "Always explain your reasoning briefly before calling a tool. "
