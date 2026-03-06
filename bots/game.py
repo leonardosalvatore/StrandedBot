@@ -1,16 +1,19 @@
 import json
 import os
+import random
 import threading
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import ollama
 
 
-WIDTH = 600
-HEIGHT = 600
+WIDTH = 1000
+HEIGHT = 800
 TITLE = "Bots"
 
-TILE_SIZE = 40
+TILE_SIZE = 10
 GRID_WIDTH = WIDTH // TILE_SIZE
 GRID_HEIGHT = HEIGHT // TILE_SIZE
 
@@ -27,14 +30,181 @@ TILE_COLORS = {
     "road": (120, 120, 120),
 }
 
+TILE_DESCRIPTIONS = {
+    "grass": "A flat patch of green grass.",
+    "sand": "Warm, loose sand.",
+    "water": "Clear, shimmering water.",
+    "forest": "Dense trees and undergrowth.",
+    "home": "A small dwelling.",
+    "road": "A well-trodden dirt path.",
+}
+
+
+@dataclass
+class Tile:
+    x: int
+    y: int
+    type: str
+    color: tuple[int, int, int] = field(default=(80, 170, 80))
+    description: str = field(default="A flat patch of green grass.")
+
+
 player_x = WIDTH // 2
 player_y = HEIGHT // 2
 
 tiles: dict[tuple[int, int], str] = {}
+tile_matrix: list[list[Tile]] = [
+    [Tile(x=x, y=y, type="grass") for y in range(GRID_HEIGHT)]
+    for x in range(GRID_WIDTH)
+]
 tiles_lock = threading.Lock()
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_ENABLED = os.getenv("OLLAMA_SCENERY", "1") == "1"
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:4b")
+
+OLLAMA_PLAY = os.getenv("OLLAMA_PLAY", "0") == "1"
+
+
+# ---------------------------------------------------------------------------
+# Procedural map generation (fast, no Ollama needed)
+# ---------------------------------------------------------------------------
+
+def _place_ellipse(cx: int, cy: int, rx: int, ry: int, tile_type: str, jitter: float = 0.3) -> int:
+    """Place tiles in a rough elliptical shape. Returns count placed."""
+    count = 0
+    for x in range(max(0, cx - rx - 2), min(GRID_WIDTH, cx + rx + 3)):
+        for y in range(max(0, cy - ry - 2), min(GRID_HEIGHT, cy + ry + 3)):
+            dx = (x - cx) / rx
+            dy = (y - cy) / ry
+            dist = dx * dx + dy * dy
+            # add some noise so edges aren't perfectly smooth
+            noise = random.uniform(-jitter, jitter)
+            if dist + noise < 1.0:
+                CreateTile(x, y, tile_type)
+                count += 1
+    return count
+
+
+def _place_border(cx: int, cy: int, rx: int, ry: int, tile_type: str, thickness: int = 2) -> int:
+    """Place a border ring around an ellipse."""
+    count = 0
+    outer_rx, outer_ry = rx + thickness, ry + thickness
+    for x in range(max(0, cx - outer_rx - 1), min(GRID_WIDTH, cx + outer_rx + 2)):
+        for y in range(max(0, cy - outer_ry - 1), min(GRID_HEIGHT, cy + outer_ry + 2)):
+            dx_o = (x - cx) / outer_rx
+            dy_o = (y - cy) / outer_ry
+            dx_i = (x - cx) / rx
+            dy_i = (y - cy) / ry
+            dist_outer = dx_o * dx_o + dy_o * dy_o
+            dist_inner = dx_i * dx_i + dy_i * dy_i
+            noise = random.uniform(-0.15, 0.15)
+            if dist_outer + noise < 1.0 and dist_inner + noise >= 1.0:
+                # don't overwrite the inner tiles
+                with tiles_lock:
+                    if tiles.get((x, y)) == "grass":
+                        pass  # ok to place
+                    else:
+                        continue
+                CreateTile(x, y, tile_type)
+                count += 1
+    return count
+
+
+def _place_road(x0: int, y0: int, x1: int, y1: int, width: int = 1, wiggle: float = 2.0) -> int:
+    """Place a road between two points with gentle curves."""
+    count = 0
+    steps = max(abs(x1 - x0), abs(y1 - y0)) * 3
+    if steps == 0:
+        return 0
+    # random control point for a bezier-like curve
+    mid_x = (x0 + x1) / 2 + random.uniform(-wiggle * 2, wiggle * 2)
+    mid_y = (y0 + y1) / 2 + random.uniform(-wiggle * 2, wiggle * 2)
+    placed: set[tuple[int, int]] = set()
+    for i in range(steps + 1):
+        t = i / steps
+        # quadratic bezier
+        bx = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * mid_x + t ** 2 * x1
+        by = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * mid_y + t ** 2 * y1
+        ix, iy = int(round(bx)), int(round(by))
+        for dx in range(-width, width + 1):
+            for dy in range(-width, width + 1):
+                px, py = ix + dx, iy + dy
+                if (px, py) not in placed and 0 <= px < GRID_WIDTH and 0 <= py < GRID_HEIGHT:
+                    CreateTile(px, py, "road")
+                    placed.add((px, py))
+                    count += 1
+    return count
+
+
+def _build_scenery_procedural() -> None:
+    """Generate a playable map with lake, forest, village, and roads — instantly."""
+    t0 = time.time()
+    total = 0
+    print("Generating map procedurally...")
+
+    # --- Lake with sand beach ---
+    lake_cx, lake_cy = 65, 25
+    lake_rx, lake_ry = 12, 8
+    n = _place_border(lake_cx, lake_cy, lake_rx, lake_ry, "sand", thickness=2)
+    total += n
+    n = _place_ellipse(lake_cx, lake_cy, lake_rx, lake_ry, "water", jitter=0.25)
+    total += n
+    print(f"  Lake: done")
+
+    # --- Forest cluster (top-left) ---
+    forest_cx, forest_cy = 15, 12
+    forest_rx, forest_ry = 14, 10
+    n = _place_ellipse(forest_cx, forest_cy, forest_rx, forest_ry, "forest", jitter=0.4)
+    total += n
+    print(f"  Forest: done")
+
+    # --- Second smaller forest (bottom-right) ---
+    forest2_cx, forest2_cy = 85, 65
+    forest2_rx, forest2_ry = 10, 8
+    n = _place_ellipse(forest2_cx, forest2_cy, forest2_rx, forest2_ry, "forest", jitter=0.45)
+    total += n
+    print(f"  Forest 2: done")
+
+    # --- Village (center-bottom area) ---
+    village_homes = [
+        (45, 55), (52, 52), (40, 60), (58, 58), (48, 64),
+    ]
+    for hx, hy in village_homes:
+        CreateTile(hx, hy, "home")
+        CreateTile(hx + 1, hy, "home")
+        CreateTile(hx, hy + 1, "home")
+        CreateTile(hx + 1, hy + 1, "home")
+        total += 4
+    print(f"  Village homes: done")
+
+    # --- Roads connecting village ---
+    for i in range(len(village_homes) - 1):
+        n = _place_road(village_homes[i][0], village_homes[i][1],
+                        village_homes[i + 1][0], village_homes[i + 1][1],
+                        width=0, wiggle=1.5)
+        total += n
+
+    # --- Main road across the map ---
+    n = _place_road(3, 40, 96, 40, width=0, wiggle=5.0)
+    total += n
+
+    # --- Road from village to main road ---
+    n = _place_road(48, 55, 48, 40, width=0, wiggle=1.5)
+    total += n
+    print(f"  Roads: done")
+
+    # --- Small pond near village ---
+    pond_cx, pond_cy = 35, 50
+    _place_border(pond_cx, pond_cy, 4, 3, "sand", thickness=1)
+    n = _place_ellipse(pond_cx, pond_cy, 4, 3, "water", jitter=0.3)
+    total += n
+    print(f"  Pond: done")
+
+    elapsed = time.time() - t0
+    print(f"Procedural map complete: {total} non-grass tiles in {elapsed:.3f}s")
 
 
 def _initialize_default_tiles() -> None:
@@ -42,6 +212,11 @@ def _initialize_default_tiles() -> None:
         for x in range(GRID_WIDTH):
             for y in range(GRID_HEIGHT):
                 tiles[(x, y)] = "grass"
+                tile_matrix[x][y] = Tile(
+                    x=x, y=y, type="grass",
+                    color=TILE_COLORS["grass"],
+                    description=TILE_DESCRIPTIONS["grass"],
+                )
 
 
 def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
@@ -50,111 +225,268 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
     if not (0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT):
         return {"ok": False, "error": "Tile out of bounds"}
 
+    color = TILE_COLORS[type]
+    description = TILE_DESCRIPTIONS[type]
+
     with tiles_lock:
         tiles[(x, y)] = type
+        tile_matrix[x][y] = Tile(
+            x=x, y=y, type=type,
+            color=color, description=description,
+        )
 
     return {"ok": True, "x": x, "y": y, "type": type}
 
 
-def _tool_schema() -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "CreateTile",
-                "description": "Create or update a tile at grid position (x, y).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "x": {
-                            "type": "integer",
-                            "description": f"Tile x coordinate from 0 to {GRID_WIDTH - 1}",
-                        },
-                        "y": {
-                            "type": "integer",
-                            "description": f"Tile y coordinate from 0 to {GRID_HEIGHT - 1}",
-                        },
-                        "type": {
-                            "type": "string",
-                            "enum": ["grass", "sand", "water", "forest", "home", "road"],
-                        },
+# ---------------------------------------------------------------------------
+# LLM player tools: Move and GetInfo
+# ---------------------------------------------------------------------------
+
+_DIRECTION_DELTAS = {
+    "north": (0, -1),
+    "south": (0, 1),
+    "east": (1, 0),
+    "west": (-1, 0),
+    "northeast": (1, -1),
+    "northwest": (-1, -1),
+    "southeast": (1, 1),
+    "southwest": (-1, 1),
+}
+
+
+def Move(direction: str) -> dict[str, Any]:
+    """Move the player one tile step in one of 8 directions."""
+    global player_x, player_y
+    direction = direction.lower().strip()
+    if direction not in _DIRECTION_DELTAS:
+        msg = f"Unknown direction '{direction}'. Use: {', '.join(_DIRECTION_DELTAS)}"
+        print(f"  [Move] ERROR: {msg}")
+        return {"ok": False, "error": msg}
+
+    dx, dy = _DIRECTION_DELTAS[direction]
+    new_x = player_x + dx * TILE_SIZE
+    new_y = player_y + dy * TILE_SIZE
+
+    # Bounds check
+    new_x = max(PLAYER_RADIUS, min(WIDTH - PLAYER_RADIUS, new_x))
+    new_y = max(PLAYER_RADIUS, min(HEIGHT - PLAYER_RADIUS, new_y))
+
+    player_x = new_x
+    player_y = new_y
+
+    # Report the tile we landed on
+    grid_x = int(player_x) // TILE_SIZE
+    grid_y = int(player_y) // TILE_SIZE
+    grid_x = max(0, min(GRID_WIDTH - 1, grid_x))
+    grid_y = max(0, min(GRID_HEIGHT - 1, grid_y))
+    landed = tile_matrix[grid_x][grid_y]
+
+    print(f"  [Move] Moved {direction} → pixel ({player_x:.0f}, {player_y:.0f}), "
+          f"tile ({grid_x}, {grid_y}) = {landed.type}: {landed.description}")
+
+    return {
+        "ok": True,
+        "direction": direction,
+        "player_x": player_x,
+        "player_y": player_y,
+        "tile_x": grid_x,
+        "tile_y": grid_y,
+        "tile_type": landed.type,
+        "tile_description": landed.description,
+    }
+
+
+def GetInfo() -> dict[str, Any]:
+    """Read the tiles surrounding the player (3x3 grid centered on player)."""
+    grid_x = int(player_x) // TILE_SIZE
+    grid_y = int(player_y) // TILE_SIZE
+    grid_x = max(0, min(GRID_WIDTH - 1, grid_x))
+    grid_y = max(0, min(GRID_HEIGHT - 1, grid_y))
+
+    surrounding: list[dict[str, Any]] = []
+    with tiles_lock:
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                nx, ny = grid_x + dx, grid_y + dy
+                if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
+                    t = tile_matrix[nx][ny]
+                    label = "center" if dx == 0 and dy == 0 else ""
+                    surrounding.append({
+                        "x": t.x,
+                        "y": t.y,
+                        "type": t.type,
+                        "description": t.description,
+                        "position": label,
+                    })
+
+    print(f"  [GetInfo] Player at tile ({grid_x}, {grid_y}), "
+          f"scanned {len(surrounding)} surrounding tiles")
+
+    return {
+        "ok": True,
+        "player_tile_x": grid_x,
+        "player_tile_y": grid_y,
+        "surrounding": surrounding,
+    }
+
+
+# Tool dispatch table
+_TOOL_DISPATCH: dict[str, Any] = {
+    "Move": Move,
+    "GetInfo": GetInfo,
+}
+
+# Ollama tool definitions for tool-calling API
+_OLLAMA_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "Move",
+            "description": (
+                "Move the player one tile step in one of 8 compass directions. "
+                "Allowed directions: north, south, east, west, northeast, northwest, southeast, southwest."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "description": "The compass direction to move (e.g. 'north', 'southeast').",
                     },
-                    "required": ["x", "y", "type"],
                 },
+                "required": ["direction"],
             },
-        }
-    ]
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "GetInfo",
+            "description": (
+                "Look around: returns the 3x3 grid of tiles surrounding the player, "
+                "including coordinates, tile type and description for each."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
+
+_PLAY_BASE_PROMPT = (
+    "You are an AI explorer controlling a character in a 2D tile-based RPG world. "
+    f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
+    "Your goal is to explore the map, survive, and discover interesting locations. "
+    "You can see what is around you with GetInfo and move with Move. "
+    "Available tile types: grass, sand, water, forest, home, road. "
+    "Water is dangerous — avoid stepping on it. "
+    "Roads are safe and fast. Homes are places to rest. Forests may hide things. "
+    "Start by looking around with GetInfo, then decide where to go. "
+    "Always explain your reasoning briefly before calling a tool. "
+    "Keep exploring — don't stop!"
+)
 
 
-def _build_scenery_with_ollama() -> None:
-    if not OLLAMA_ENABLED:
-        return
+def _run_ollama_play_loop() -> None:
+    """Run the LLM agent loop: the model calls Move/GetInfo tools to explore the map."""
+    print(f"\n{'='*60}")
+    print(f"OLLAMA PLAY MODE — model: {OLLAMA_MODEL}")
+    print(f"{'='*60}\n")
 
     messages: list[dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": (
-                "You are a terrain generator for a 15x15 tile map. "
-                "Use only the CreateTile tool to build the map. "
-                "Allowed types are grass, sand, water, forest, home, road. "
-                "Create roads and at least one home."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Generate a coherent map for coordinates x=0..14 and y=0..14. "
-                "Prefer natural-looking regions and a road path."
-            ),
-        },
+        {"role": "user", "content": _PLAY_BASE_PROMPT},
     ]
 
-    for _ in range(20):
+    step = 0
+    while True:
+        step += 1
+        print(f"\n--- Step {step} ---")
+
         try:
-            response = ollama.chat(model=OLLAMA_MODEL, messages=messages, tools=_tool_schema())
-        except Exception:
-            return
-
-        message = response.get("message", {})
-        tool_calls = message.get("tool_calls", [])
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": message.get("content", ""),
-                "tool_calls": tool_calls,
-            }
-        )
-
-        if not tool_calls:
-            return
-
-        for call in tool_calls:
-            function_data = call.get("function", {})
-            name = function_data.get("name")
-            args = function_data.get("arguments", {})
-
-            result: dict[str, Any]
-            if name != "CreateTile":
-                result = {"ok": False, "error": f"Unknown tool: {name}"}
-            else:
-                x = int(args.get("x", -1))
-                y = int(args.get("y", -1))
-                tile_type = str(args.get("type", ""))
-                result = CreateTile(x=x, y=y, type=tile_type)
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "name": name or "CreateTile",
-                    "content": json.dumps(result),
-                }
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=messages,
+                tools=_OLLAMA_TOOLS,
             )
+        except Exception as e:
+            print(f"  [Ollama] Error: {e}")
+            time.sleep(5)
+            continue
+
+        # Extract the assistant message
+        if isinstance(response, dict):
+            msg = response.get("message", {})
+        else:
+            msg = getattr(response, "message", {})
+            if not isinstance(msg, dict):
+                msg = {
+                    "role": getattr(msg, "role", "assistant"),
+                    "content": getattr(msg, "content", ""),
+                    "tool_calls": getattr(msg, "tool_calls", None),
+                }
+
+        # Print any text the model said
+        content = msg.get("content", "") or ""
+        if content.strip():
+            print(f"  [LLM] {content.strip()}")
+
+        messages.append(msg)
+
+        # Check for tool calls
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            # No tool calls — nudge the model to keep going
+            print("  [System] No tool call — nudging LLM to continue exploring.")
+            messages.append({
+                "role": "user",
+                "content": "Keep exploring! Use GetInfo to look around or Move to go somewhere.",
+            })
+            time.sleep(1)
+            continue
+
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                fn_name = tc.get("function", {}).get("name", "")
+                fn_args = tc.get("function", {}).get("arguments", {})
+            else:
+                fn_obj = getattr(tc, "function", None)
+                fn_name = getattr(fn_obj, "name", "") if fn_obj else ""
+                fn_args = getattr(fn_obj, "arguments", {}) if fn_obj else {}
+
+            if isinstance(fn_args, str):
+                try:
+                    fn_args = json.loads(fn_args)
+                except json.JSONDecodeError:
+                    fn_args = {}
+
+            print(f"  [Tool Call] {fn_name}({fn_args})")
+
+            func = _TOOL_DISPATCH.get(fn_name)
+            if func is None:
+                result = {"ok": False, "error": f"Unknown tool: {fn_name}"}
+            else:
+                try:
+                    result = func(**fn_args)
+                except Exception as e:
+                    result = {"ok": False, "error": str(e)}
+
+            # Feed the tool result back to the model
+            messages.append({
+                "role": "tool",
+                "content": json.dumps(result),
+            })
+
+        # Small delay to avoid hammering Ollama
+        time.sleep(0.5)
 
 
 def _start_scenery_generation() -> None:
-    worker = threading.Thread(target=_build_scenery_with_ollama, daemon=True)
-    worker.start()
+    _build_scenery_procedural()
+    if OLLAMA_PLAY:
+        worker = threading.Thread(target=_run_ollama_play_loop, daemon=True)
+        worker.start()
 
 
 def update(dt: float) -> None:
