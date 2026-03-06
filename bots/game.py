@@ -1,3 +1,4 @@
+import importlib.resources
 import json
 import os
 import random
@@ -7,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import ollama
+import pygame
 
 
 WIDTH = 1000
@@ -66,6 +68,20 @@ bot_x = random.randint(BOT_RADIUS, WIDTH - BOT_RADIUS)
 bot_y = random.randint(BOT_RADIUS, HEIGHT - BOT_RADIUS)
 bot_energy = 1000
 bot_inventory: list[dict[str, Any]] = []
+bot_state: str = "Waiting"  # Waiting | Thinking | Moving | LookClose | LookFar | Charging
+
+# --- Spritesheet setup (450x300, 6 sprites of 150x150) ---
+_SPRITE_SHEET: pygame.Surface | None = None
+_SPRITE_SIZE = 150
+# Map bot_state -> (col, row) in the spritesheet
+_STATE_SPRITE_POS: dict[str, tuple[int, int]] = {
+    "Waiting":   (0, 0),
+    "Thinking":  (1, 0),
+    "Moving":    (2, 0),
+    "LookClose": (0, 1),
+    "LookFar":   (1, 1),
+    "Charging":  (2, 1),
+}
 
 tiles: dict[tuple[int, int], str] = {}
 # Crate contents: maps (x, y) -> {"energy": int, "opened": bool}
@@ -272,7 +288,7 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# LLM bot tools: Move and GetInfo
+# LLM bot tools: Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate
 # ---------------------------------------------------------------------------
 
 _DIRECTION_DELTAS = {
@@ -372,7 +388,7 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
     }
 
 
-def GetInfo() -> dict[str, Any]:
+def LookClose() -> dict[str, Any]:
     """Read the tiles surrounding the bot (3x3 grid centered on bot)."""
     _consume_energy(1)
     grid_x, grid_y = _bot_grid_pos()
@@ -393,7 +409,7 @@ def GetInfo() -> dict[str, Any]:
                         "position": label,
                     })
 
-    print(f"  [GetInfo] Bot at tile ({grid_x}, {grid_y}), "
+    print(f"  [LookClose] Bot at tile ({grid_x}, {grid_y}), "
           f"scanned {len(surrounding)} surrounding tiles")
 
     return {
@@ -429,7 +445,7 @@ def _tile_direction(dx: int, dy: int) -> str:
     return "here"
 
 
-def GetPanorama() -> dict[str, Any]:
+def LookFar() -> dict[str, Any]:
     """Scan a wide area (radius 10) and return notable features with direction and distance."""
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
@@ -462,7 +478,7 @@ def GetPanorama() -> dict[str, Any]:
             best[key] = f
     summary = sorted(best.values(), key=lambda f: f["distance"])
 
-    print(f"  [GetPanorama] Scanned radius {radius} from ({gx}, {gy}): "
+    print(f"  [LookFar] Scanned radius {radius} from ({gx}, {gy}): "
           f"found {len(summary)} notable features")
     for f in summary:
         print(f"    {f['type']:>7} {f['direction']:<10} dist={f['distance']}  at ({f['x']},{f['y']})")
@@ -540,10 +556,19 @@ def TakeAllFromCrate() -> dict[str, Any]:
 # Tool dispatch table
 _TOOL_DISPATCH: dict[str, Any] = {
     "Move": Move,
-    "GetInfo": GetInfo,
-    "GetPanorama": GetPanorama,
+    "LookClose": LookClose,
+    "LookFar": LookFar,
     "OpenCrate": OpenCrate,
     "TakeAllFromCrate": TakeAllFromCrate,
+}
+
+# Map tool name -> bot_state to set before calling
+_TOOL_STATE: dict[str, str] = {
+    "Move": "Moving",
+    "LookClose": "LookClose",
+    "LookFar": "LookFar",
+    "OpenCrate": "LookClose",
+    "TakeAllFromCrate": "Charging",
 }
 
 # Ollama tool definitions for tool-calling API
@@ -577,7 +602,7 @@ _OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "GetInfo",
+            "name": "LookClose",
             "description": (
                 "Look around: returns the 3x3 grid of tiles surrounding the bot, "
                 "including coordinates, tile type and description for each. "
@@ -593,7 +618,7 @@ _OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "GetPanorama",
+            "name": "LookFar",
             "description": (
                 "Wide-area scan: looks in a radius of 10 tiles around the bot and "
                 "returns a list of notable features (forest, home, road, crate) with "
@@ -646,11 +671,11 @@ _PLAY_BASE_PROMPT = (
     "You are a robot explorer in a 2D tile-based RPG world. "
     f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
     "You run on battery. Your starting energy is 1000. "
-    "Every action (Move, GetInfo, GetPanorama, OpenCrate, TakeAllFromCrate) costs 1 energy. "
+    "Every action (Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate) costs 1 energy. "
     "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
-    "- GetInfo: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-    "- GetPanorama: wide scan (radius 10). Returns notable features (forest, home, road, crate) "
+    "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
+    "- LookFar: wide scan (radius 10). Returns notable features (forest, home, road, crate) "
     "with direction and distance. Use this to plan your route!\n"
     "- Move(direction, distance): move 1-10 tiles in 8 directions (north/south/east/west/ne/nw/se/sw). "
     "Distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
@@ -662,9 +687,9 @@ _PLAY_BASE_PROMPT = (
     "Water is dangerous — avoid it. "
     "Roads are safe. Homes are rest points. Forests may hide things. "
     "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
-    "\n\nStrategy: use GetPanorama to find crates and notable features, "
+    "\n\nStrategy: use LookFar to find crates and notable features, "
     "Move(direction, distance=10) on roads for fast travel, distance=5 on grass, "
-    "distance=1 in forests. Avoid water! GetInfo when close, "
+    "distance=1 in forests. Avoid water! LookClose when close, "
     "then OpenCrate + TakeAllFromCrate to loot energy. "
     "Explore efficiently to conserve battery. "
     "Always explain your reasoning briefly before calling a tool. "
@@ -695,7 +720,8 @@ def _print_step_status() -> None:
 
 
 def _run_ollama_play_loop() -> None:
-    """Run the LLM agent loop: the model calls Move/GetInfo tools to explore the map."""
+    """Run the LLM agent loop: the model calls Move/LookClose tools to explore the map."""
+    global bot_state
     print(f"\n{'='*60}")
     print(f"OLLAMA PLAY MODE — model: {OLLAMA_MODEL}")
     print(f"{'='*60}\n")
@@ -709,6 +735,7 @@ def _run_ollama_play_loop() -> None:
         step += 1
         print(f"\n--- Step {step} ---")
 
+        bot_state = "Thinking"
         try:
             response = ollama.chat(
                 model=OLLAMA_MODEL,
@@ -743,10 +770,11 @@ def _run_ollama_play_loop() -> None:
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
             # No tool calls — nudge the model to keep going
+            bot_state = "Waiting"
             print("  [System] No tool call — nudging bot to continue exploring.")
             messages.append({
                 "role": "user",
-                "content": "Keep exploring! Use GetInfo to look around or Move to go somewhere.",
+                "content": "Keep exploring! Use LookClose to look around or Move to go somewhere.",
             })
             time.sleep(1)
             continue
@@ -768,6 +796,9 @@ def _run_ollama_play_loop() -> None:
 
             print(f"  [Tool Call] {fn_name}({fn_args})")
 
+            # Set bot_state based on tool being called
+            bot_state = _TOOL_STATE.get(fn_name, "Waiting")
+
             func = _TOOL_DISPATCH.get(fn_name)
             if func is None:
                 result = {"ok": False, "error": f"Unknown tool: {fn_name}"}
@@ -784,6 +815,7 @@ def _run_ollama_play_loop() -> None:
             })
 
         # --- Print status after each step ---
+        bot_state = "Waiting"
         _print_step_status()
 
         # Check for death
@@ -825,6 +857,7 @@ def update(dt: float) -> None:
 
 
 def draw() -> None:
+    global _SPRITE_SHEET
     screen.clear()
 
     with tiles_lock:
@@ -836,7 +869,35 @@ def draw() -> None:
                     Rect((x * TILE_SIZE, y * TILE_SIZE), (TILE_SIZE, TILE_SIZE)), color
                 )
 
-    screen.draw.filled_circle((bot_x, bot_y), BOT_RADIUS, (0, 120, 255))
+    # Load spritesheet on first draw (pygame is initialised by now)
+    if _SPRITE_SHEET is None:
+        try:
+            _res = importlib.resources.files("bots.resources").joinpath("bots.png")
+            with importlib.resources.as_file(_res) as _sheet_path:
+                _SPRITE_SHEET = pygame.image.load(str(_sheet_path)).convert_alpha()
+            print(f"  [Sprite] Loaded spritesheet from package resources")
+        except Exception as e:
+            print(f"  [Sprite] Failed to load bots.png: {e}")
+            # Fallback: draw circle
+            screen.draw.filled_circle((bot_x, bot_y), BOT_RADIUS, (0, 120, 255))
+            return
+
+    # Pick the right sprite sub-rect based on bot_state
+    col, row = _STATE_SPRITE_POS.get(bot_state, (0, 0))
+    src_rect = pygame.Rect(
+        col * _SPRITE_SIZE, row * _SPRITE_SIZE,
+        _SPRITE_SIZE, _SPRITE_SIZE,
+    )
+    sprite = _SPRITE_SHEET.subsurface(src_rect)
+
+    # Scale sprite to fit BOT_RADIUS * 2
+    draw_size = BOT_RADIUS * 4
+    scaled = pygame.transform.smoothscale(sprite, (draw_size, draw_size))
+
+    # Blit centered on bot position
+    dest_x = int(bot_x) - draw_size // 2
+    dest_y = int(bot_y) - draw_size // 2
+    screen.surface.blit(scaled, (dest_x, dest_y))
 
 
 def run() -> None:
