@@ -1,7 +1,9 @@
+import atexit
 import importlib.resources
 import json
 import os
 import random
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -11,13 +13,17 @@ import ollama
 import pygame
 
 
-WIDTH = 1000
-HEIGHT = 800
+MAP_WIDTH = 1000
+SIDEBAR_WIDTH = 200
+WIDTH = MAP_WIDTH + SIDEBAR_WIDTH
+MAP_HEIGHT = 800
+PANEL_HEIGHT = 400
+HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
 
 TILE_SIZE = 10
-GRID_WIDTH = WIDTH // TILE_SIZE
-GRID_HEIGHT = HEIGHT // TILE_SIZE
+GRID_WIDTH = MAP_WIDTH // TILE_SIZE
+GRID_HEIGHT = MAP_HEIGHT // TILE_SIZE
 
 BOT_RADIUS = 12
 BOT_SPEED = 220
@@ -64,13 +70,14 @@ class Tile:
     description: str = field(default="A flat patch of green grass.")
 
 
-bot_x = random.randint(BOT_RADIUS, WIDTH - BOT_RADIUS)
-bot_y = random.randint(BOT_RADIUS, HEIGHT - BOT_RADIUS)
+bot_x = random.randint(BOT_RADIUS, MAP_WIDTH - BOT_RADIUS)
+bot_y = random.randint(BOT_RADIUS, MAP_HEIGHT - BOT_RADIUS)
 bot_target_x: float = bot_x
 bot_target_y: float = bot_y
-bot_energy = 1000
+bot_energy = 100
 bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"  # Waiting | Thinking | Moving | LookClose | LookFar | Charging
+bot_last_speech: str = ""  # Last text the LLM said, shown at screen bottom
 
 # --- Spritesheet setup (450x300, 6 sprites of 150x150) ---
 _SPRITE_SHEET: pygame.Surface | None = None
@@ -95,10 +102,13 @@ tile_matrix: list[list[Tile]] = [
 tiles_lock = threading.Lock()
 
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b") #fast but not always call the tools
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b") # fast and funny
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:4b")
+
 
 OLLAMA_PLAY = os.getenv("OLLAMA_PLAY", "0") == "1"
 
@@ -321,7 +331,6 @@ def _bot_grid_pos() -> tuple[int, int]:
 def Move(direction: str, distance: int = 1) -> dict[str, Any]:
     """Move the bot 1-10 tile steps in one of 8 directions, limited by terrain."""
     global bot_target_x, bot_target_y
-    _consume_energy(1)
     direction = direction.lower().strip()
     if direction not in _DIRECTION_DELTAS:
         msg = f"Unknown direction '{direction}'. Use: {', '.join(_DIRECTION_DELTAS)}"
@@ -348,10 +357,11 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
     steps_taken = 0
     new_x, new_y = bot_target_x, bot_target_y
     for _ in range(actual_distance):
+        _consume_energy(1)
         next_x = new_x + dx * TILE_SIZE
         next_y = new_y + dy * TILE_SIZE
-        next_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, next_x))
-        next_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, next_y))
+        next_x = max(BOT_RADIUS, min(MAP_WIDTH - BOT_RADIUS, next_x))
+        next_y = max(BOT_RADIUS, min(MAP_HEIGHT - BOT_RADIUS, next_y))
         # Check what tile we'd land on
         next_gx = max(0, min(GRID_WIDTH - 1, int(next_x) // TILE_SIZE))
         next_gy = max(0, min(GRID_HEIGHT - 1, int(next_y) // TILE_SIZE))
@@ -548,6 +558,10 @@ def TakeAllFromCrate() -> dict[str, Any]:
     crate["energy"] = 0
     bot_energy += gained
 
+    # Replace the crate tile with grass
+    CreateTile(gx, gy, "grass")
+    del crate_contents[(gx, gy)]
+
     print(f"  [TakeAllFromCrate] Took {gained} energy from crate at ({gx}, {gy}). "
           f"Bot energy now: {bot_energy}")
     time.sleep(gained/10)
@@ -740,6 +754,13 @@ def _run_ollama_play_loop() -> None:
     step = 0
     while True:
         step += 1
+
+        # Wait for the bot to finish moving/charging before next LLM call
+        while True:
+            if bot_state not in ("Moving", "Charging"):
+                break
+            time.sleep(0.1)
+
         print(f"\n--- Step {step} ---")
 
         bot_state = "Thinking"
@@ -770,12 +791,14 @@ def _run_ollama_play_loop() -> None:
         content = msg.get("content", "") or ""
         if content.strip():
             print(f"  [🤖] {content.strip()}")
+            global bot_last_speech
+            bot_last_speech = content.strip()
 
         messages.append(msg)
 
         # Check for tool calls
         tool_calls = msg.get("tool_calls") or []
-        if not tool_calls:
+        if not tool_calls and bot_x == bot_target_x and bot_y == bot_target_y:
             # No tool calls — nudge the model to keep going
             bot_state = "Waiting"
             print("  [System] No tool call — nudging bot to continue exploring.")
@@ -860,8 +883,8 @@ def update(dt: float) -> None:
     if dx or dy:
         bot_target_x += dx * BOT_SPEED * dt
         bot_target_y += dy * BOT_SPEED * dt
-        bot_target_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, bot_target_x))
-        bot_target_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, bot_target_y))
+        bot_target_x = max(BOT_RADIUS, min(MAP_WIDTH - BOT_RADIUS, bot_target_x))
+        bot_target_y = max(BOT_RADIUS, min(MAP_HEIGHT - BOT_RADIUS, bot_target_y))
 
     # --- Smoothly move visual position toward target ---
     move_speed = TILE_SIZE * 2  # 2 tiles per second
@@ -925,12 +948,96 @@ def draw() -> None:
     dest_y = int(bot_y) - draw_size // 2
     screen.surface.blit(scaled, (dest_x, dest_y))
 
+    # --- Right sidebar (stats) ---
+    sidebar_x = MAP_WIDTH
+    screen.draw.filled_rect(
+        Rect((sidebar_x, 0), (SIDEBAR_WIDTH, MAP_HEIGHT)), (20, 20, 30)
+    )
+    screen.draw.line((sidebar_x, 0), (sidebar_x, MAP_HEIGHT), (60, 60, 80))
+
+    pad = 10
+    font_stats = pygame.font.SysFont("monospace", 16, bold=True)
+    stat_lh = font_stats.get_linesize()
+    sx = sidebar_x + pad
+    sy = pad
+
+    gx, gy = _bot_grid_pos()
+    tgx = max(0, min(GRID_WIDTH - 1, int(bot_target_x) // TILE_SIZE))
+    tgy = max(0, min(GRID_HEIGHT - 1, int(bot_target_y) // TILE_SIZE))
+
+    stat_lines = [
+        f"Energy: {bot_energy}",
+        f"Pos: ({gx}, {gy})",
+        f"Target: ({tgx}, {tgy})",
+        f"State: {bot_state}",
+        "",
+        f"Model:",
+        f" {OLLAMA_MODEL}",
+    ]
+    for i, line in enumerate(stat_lines):
+        color = (180, 220, 255) if i < 4 else (140, 160, 200)
+        surf = font_stats.render(line, True, color)
+        screen.surface.blit(surf, (sx, sy + i * stat_lh))
+
+    # --- Bottom info panel (speech) ---
+    panel_y = MAP_HEIGHT
+    screen.draw.filled_rect(
+        Rect((0, panel_y), (WIDTH, PANEL_HEIGHT)), (20, 20, 30)
+    )
+    screen.draw.line((0, panel_y), (WIDTH, panel_y), (60, 60, 80))
+
+    padding = 14
+    font_speech = pygame.font.SysFont("monospace", 22)
+
+    if bot_last_speech:
+        speech_y = panel_y + padding
+        line_height = font_speech.get_linesize()
+        max_width = WIDTH - padding * 2 - 30  # margin for 🤖 prefix
+
+        # Word-wrap into lines that fit the panel width
+        words = bot_last_speech.split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            test = f"{current} {word}".strip()
+            if font_speech.size(test)[0] <= max_width:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+
+        # Cap lines to fit the remaining panel space
+        remaining = PANEL_HEIGHT - padding * 2
+        max_lines = max(1, remaining // line_height)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines[-1] = lines[-1][:-3] + "..." if len(lines[-1]) > 3 else "..."
+
+        for i, line in enumerate(lines):
+            prefix = "🤖 " if i == 0 else "   "
+            text_surface = font_speech.render(f"{prefix}{line}", True, (220, 220, 220))
+            screen.surface.blit(text_surface, (padding, speech_y + i * line_height))
+
 
 def run() -> None:
     import pgzrun
 
     pgzrun.go()
 
+
+def _stop_ollama_model() -> None:
+    """Unload the Ollama model from memory on exit."""
+    try:
+        subprocess.run(["ollama", "stop", OLLAMA_MODEL], timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"  [Ollama] Stopped model {OLLAMA_MODEL}")
+    except Exception:
+        pass  # best-effort
+
+atexit.register(_stop_ollama_model)
 
 _initialize_default_tiles()
 _start_scenery_generation()
