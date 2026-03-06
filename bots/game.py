@@ -102,11 +102,13 @@ tile_matrix: list[list[Tile]] = [
 tiles_lock = threading.Lock()
 
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b") # not moving much
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b") # not calling the tools
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b") #fast but not always call the tools
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b") # fast and funny
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b") # fast and funny, more coherent than 3b
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:14b") # too big for my 12GB video card
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "granite4:1b") # too small
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:4b")
 
 
@@ -394,8 +396,6 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
         "distance_requested": distance,
         "distance_moved": steps_taken,
         "terrain_limit": terrain_limit,
-        "bot_x": bot_target_x,
-        "bot_y": bot_target_y,
         "tile_x": grid_x,
         "tile_y": grid_y,
         "tile_type": landed.type,
