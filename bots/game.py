@@ -75,15 +75,16 @@ class Tile:
     description: str = field(default="A flat patch of green grass.")
     fog: bool = field(default=True)  # Fog of war
 
-
+bot_start_energy = 100
 bot_x = 400
 bot_y = 550
 bot_target_x: float = bot_x
 bot_target_y: float = bot_y
-bot_energy = 100
+bot_energy = bot_start_energy
 bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"  # Waiting | Thinking | Moving | LookClose | LookFar | Charging
 bot_last_speech: str = ""  # Last text the LLM said, shown at screen bottom
+bot_lookfar_distance = 20
 
 # --- Spritesheet setup (450x300, 6 sprites of 150x150) ---
 _SPRITE_SHEET: pygame.Surface | None = None
@@ -519,10 +520,10 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
 
 
 def LookFar() -> dict[str, Any]:
-    """Scan a wide area (radius 50) and return notable features with absolute coordinates and distance. Forests block line-of-sight."""
+    """Scan a wide area (radius {bot_lookfar_distance}) and return notable features with absolute coordinates and distance. Forests block line-of-sight."""
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
-    radius = 20
+    radius = bot_lookfar_distance
 
     features: list[dict[str, Any]] = []
     with tiles_lock:
@@ -701,7 +702,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "LookFar",
             "description": (
-                "Wide-area scan: looks in a radius of 50 tiles around the bot and "
+                f"Wide-area scan: looks in a radius of {bot_lookfar_distance} tiles around the bot and "
                 "returns a list of notable features (forest, home, road, crate) with "
                 "their absolute tile coordinates (x, y), type, and distance. "
                 "Forests block line-of-sight, so features hidden behind forests won't be visible. "
@@ -753,12 +754,12 @@ _PLAY_BASE_PROMPT = (
     "You are a robot explorer in a 2D tile-based RPG world. "
     f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
     "All coordinates are TILE coordinates (x,y in grid), not pixel coordinates. "
-    "You run on battery. Your starting energy is 1000. "
-    "Every action (Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate) costs 1 energy. "
+    f"You run on battery. Your starting energy is {bot_start_energy}. "
+    "Every action (Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate, Thinking) costs at least 1 energy. Moving costs 1 energy per tile. "
     "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
     "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-    "- LookFar: wide scan (radius 20). Returns notable features (forest, home, road, crate) "
+    f"- LookFar: wide scan (radius {bot_lookfar_distance}). Returns notable features (forest, home, road, crate) "
     "with direction and distance. Use this to plan your route!\n"
     "- MoveTo(target_x, target_y): move toward absolute target tile. Specify (x, y) grid coordinates. "
     "Moves up to 10 tiles per call, respecting terrain limits and water barriers. "
@@ -826,6 +827,7 @@ def _run_ollama_play_loop() -> None:
         print(f"\n--- Step {step} ---")
 
         bot_state = "Thinking"
+        _consume_energy(1)
         try:
             response = ollama.chat(
                 model=OLLAMA_MODEL,
