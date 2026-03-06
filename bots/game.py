@@ -17,8 +17,8 @@ TILE_SIZE = 10
 GRID_WIDTH = WIDTH // TILE_SIZE
 GRID_HEIGHT = HEIGHT // TILE_SIZE
 
-PLAYER_RADIUS = 12
-PLAYER_SPEED = 220
+BOT_RADIUS = 12
+BOT_SPEED = 220
 
 TILE_TYPES = {"grass", "sand", "water", "forest", "home", "road", "crate"}
 TILE_COLORS = {
@@ -62,10 +62,10 @@ class Tile:
     description: str = field(default="A flat patch of green grass.")
 
 
-player_x = random.randint(PLAYER_RADIUS, WIDTH - PLAYER_RADIUS)
-player_y = random.randint(PLAYER_RADIUS, HEIGHT - PLAYER_RADIUS)
-player_energy = 1000
-player_inventory: list[dict[str, Any]] = []
+bot_x = random.randint(BOT_RADIUS, WIDTH - BOT_RADIUS)
+bot_y = random.randint(BOT_RADIUS, HEIGHT - BOT_RADIUS)
+bot_energy = 1000
+bot_inventory: list[dict[str, Any]] = []
 
 tiles: dict[tuple[int, int], str] = {}
 # Crate contents: maps (x, y) -> {"energy": int, "opened": bool}
@@ -272,7 +272,7 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# LLM player tools: Move and GetInfo
+# LLM bot tools: Move and GetInfo
 # ---------------------------------------------------------------------------
 
 _DIRECTION_DELTAS = {
@@ -288,40 +288,40 @@ _DIRECTION_DELTAS = {
 
 
 def _consume_energy(amount: int = 1) -> None:
-    """Decrease player energy by amount."""
-    global player_energy
-    player_energy = max(0, player_energy - amount)
+    """Decrease bot energy by amount."""
+    global bot_energy
+    bot_energy = max(0, bot_energy - amount)
 
 
-def _player_grid_pos() -> tuple[int, int]:
-    """Return the player's current tile grid position."""
-    gx = max(0, min(GRID_WIDTH - 1, int(player_x) // TILE_SIZE))
-    gy = max(0, min(GRID_HEIGHT - 1, int(player_y) // TILE_SIZE))
+def _bot_grid_pos() -> tuple[int, int]:
+    """Return the bot's current tile grid position."""
+    gx = max(0, min(GRID_WIDTH - 1, int(bot_x) // TILE_SIZE))
+    gy = max(0, min(GRID_HEIGHT - 1, int(bot_y) // TILE_SIZE))
     return gx, gy
 
 
 def Move(direction: str, distance: int = 1) -> dict[str, Any]:
-    """Move the player 1-10 tile steps in one of 8 directions, limited by terrain."""
-    global player_x, player_y
+    """Move the bot 1-10 tile steps in one of 8 directions, limited by terrain."""
+    global bot_x, bot_y
     _consume_energy(1)
     direction = direction.lower().strip()
     if direction not in _DIRECTION_DELTAS:
         msg = f"Unknown direction '{direction}'. Use: {', '.join(_DIRECTION_DELTAS)}"
         print(f"  [Move] ERROR: {msg}")
-        return {"ok": False, "error": msg, "energy": player_energy}
+        return {"ok": False, "error": msg, "energy": bot_energy}
 
     distance = max(1, min(10, int(distance)))
     dx, dy = _DIRECTION_DELTAS[direction]
 
     # Check terrain speed limit at starting tile
-    start_gx, start_gy = _player_grid_pos()
+    start_gx, start_gy = _bot_grid_pos()
     start_tile = tile_matrix[start_gx][start_gy]
     terrain_limit = TILE_MAX_DISTANCE.get(start_tile.type, 5)
     if terrain_limit == 0:
         msg = (f"Cannot move — stuck on {start_tile.type} at ({start_gx}, {start_gy})! "
                f"You should not be on water.")
         print(f"  [Move] BLOCKED: {msg}")
-        return {"ok": False, "error": msg, "energy": player_energy,
+        return {"ok": False, "error": msg, "energy": bot_energy,
                 "tile_x": start_gx, "tile_y": start_gy, "tile_type": start_tile.type}
 
     actual_distance = min(distance, terrain_limit)
@@ -329,10 +329,10 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
     # Step tile-by-tile, stopping before water
     steps_taken = 0
     for _ in range(actual_distance):
-        next_x = player_x + dx * TILE_SIZE
-        next_y = player_y + dy * TILE_SIZE
-        next_x = max(PLAYER_RADIUS, min(WIDTH - PLAYER_RADIUS, next_x))
-        next_y = max(PLAYER_RADIUS, min(HEIGHT - PLAYER_RADIUS, next_y))
+        next_x = bot_x + dx * TILE_SIZE
+        next_y = bot_y + dy * TILE_SIZE
+        next_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, next_x))
+        next_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, next_y))
         # Check what tile we'd land on
         next_gx = max(0, min(GRID_WIDTH - 1, int(next_x) // TILE_SIZE))
         next_gy = max(0, min(GRID_HEIGHT - 1, int(next_y) // TILE_SIZE))
@@ -340,11 +340,11 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
         if next_tile.type == "water":
             print(f"  [Move] Stopped before water at ({next_gx}, {next_gy})")
             break
-        player_x = next_x
-        player_y = next_y
+        bot_x = next_x
+        bot_y = next_y
         steps_taken += 1
 
-    grid_x, grid_y = _player_grid_pos()
+    grid_x, grid_y = _bot_grid_pos()
     landed = tile_matrix[grid_x][grid_y]
 
     if steps_taken < distance:
@@ -362,20 +362,20 @@ def Move(direction: str, distance: int = 1) -> dict[str, Any]:
         "distance_requested": distance,
         "distance_moved": steps_taken,
         "terrain_limit": terrain_limit,
-        "player_x": player_x,
-        "player_y": player_y,
+        "bot_x": bot_x,
+        "bot_y": bot_y,
         "tile_x": grid_x,
         "tile_y": grid_y,
         "tile_type": landed.type,
         "tile_description": landed.description,
-        "energy": player_energy,
+        "energy": bot_energy,
     }
 
 
 def GetInfo() -> dict[str, Any]:
-    """Read the tiles surrounding the player (3x3 grid centered on player)."""
+    """Read the tiles surrounding the bot (3x3 grid centered on bot)."""
     _consume_energy(1)
-    grid_x, grid_y = _player_grid_pos()
+    grid_x, grid_y = _bot_grid_pos()
 
     surrounding: list[dict[str, Any]] = []
     with tiles_lock:
@@ -393,15 +393,15 @@ def GetInfo() -> dict[str, Any]:
                         "position": label,
                     })
 
-    print(f"  [GetInfo] Player at tile ({grid_x}, {grid_y}), "
+    print(f"  [GetInfo] Bot at tile ({grid_x}, {grid_y}), "
           f"scanned {len(surrounding)} surrounding tiles")
 
     return {
         "ok": True,
-        "player_tile_x": grid_x,
-        "player_tile_y": grid_y,
+        "bot_tile_x": grid_x,
+        "bot_tile_y": grid_y,
         "surrounding": surrounding,
-        "energy": player_energy,
+        "energy": bot_energy,
     }
 
 
@@ -432,7 +432,7 @@ def _tile_direction(dx: int, dy: int) -> str:
 def GetPanorama() -> dict[str, Any]:
     """Scan a wide area (radius 10) and return notable features with direction and distance."""
     _consume_energy(1)
-    gx, gy = _player_grid_pos()
+    gx, gy = _bot_grid_pos()
     radius = 10
 
     features: list[dict[str, Any]] = []
@@ -469,29 +469,29 @@ def GetPanorama() -> dict[str, Any]:
 
     return {
         "ok": True,
-        "player_tile_x": gx,
-        "player_tile_y": gy,
+        "bot_tile_x": gx,
+        "bot_tile_y": gy,
         "features": summary,
-        "energy": player_energy,
+        "energy": bot_energy,
     }
 
 
 def OpenCrate() -> dict[str, Any]:
-    """Open the crate on the player's current tile (if any)."""
+    """Open the crate on the bot's current tile (if any)."""
     _consume_energy(1)
-    gx, gy = _player_grid_pos()
+    gx, gy = _bot_grid_pos()
     crate = crate_contents.get((gx, gy))
 
     if crate is None:
         msg = f"No crate at tile ({gx}, {gy})."
         print(f"  [OpenCrate] {msg}")
-        return {"ok": False, "error": msg, "energy": player_energy}
+        return {"ok": False, "error": msg, "energy": bot_energy}
 
     if crate["opened"]:
         msg = f"Crate at ({gx}, {gy}) is already open. Energy inside: {crate['energy']}."
         print(f"  [OpenCrate] {msg}")
         return {"ok": True, "already_opened": True, "energy_inside": crate["energy"],
-                "energy": player_energy}
+                "energy": bot_energy}
 
     crate["opened"] = True
     print(f"  [OpenCrate] Opened crate at ({gx}, {gy}) — contains {crate['energy']} energy!")
@@ -501,37 +501,37 @@ def OpenCrate() -> dict[str, Any]:
         "energy_inside": crate["energy"],
         "tile_x": gx,
         "tile_y": gy,
-        "energy": player_energy,
+        "energy": bot_energy,
     }
 
 
 def TakeAllFromCrate() -> dict[str, Any]:
-    """Take all energy from the opened crate on the player's current tile."""
-    global player_energy
+    """Take all energy from the opened crate on the bot's current tile."""
+    global bot_energy
     _consume_energy(1)
-    gx, gy = _player_grid_pos()
+    gx, gy = _bot_grid_pos()
     crate = crate_contents.get((gx, gy))
 
     if crate is None:
         msg = f"No crate at tile ({gx}, {gy})."
         print(f"  [TakeAllFromCrate] {msg}")
-        return {"ok": False, "error": msg, "energy": player_energy}
+        return {"ok": False, "error": msg, "energy": bot_energy}
 
     if not crate["opened"]:
         msg = f"Crate at ({gx}, {gy}) is not opened yet. Use OpenCrate first."
         print(f"  [TakeAllFromCrate] {msg}")
-        return {"ok": False, "error": msg, "energy": player_energy}
+        return {"ok": False, "error": msg, "energy": bot_energy}
 
     gained = crate["energy"]
     crate["energy"] = 0
-    player_energy += gained
+    bot_energy += gained
 
     print(f"  [TakeAllFromCrate] Took {gained} energy from crate at ({gx}, {gy}). "
-          f"Player energy now: {player_energy}")
+          f"Bot energy now: {bot_energy}")
     return {
         "ok": True,
         "energy_gained": gained,
-        "energy": player_energy,
+        "energy": bot_energy,
         "tile_x": gx,
         "tile_y": gy,
     }
@@ -553,7 +553,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "Move",
             "description": (
-                "Move the player 1-10 tile steps in one of 8 compass directions. "
+                "Move the bot 1-10 tile steps in one of 8 compass directions. "
                 "Actual distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
                 "The limit is based on the tile you START on. Movement also stops before entering water. "
                 "Costs 1 energy regardless of distance."
@@ -579,7 +579,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "GetInfo",
             "description": (
-                "Look around: returns the 3x3 grid of tiles surrounding the player, "
+                "Look around: returns the 3x3 grid of tiles surrounding the bot, "
                 "including coordinates, tile type and description for each. "
                 "Costs 1 energy."
             ),
@@ -595,7 +595,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "GetPanorama",
             "description": (
-                "Wide-area scan: looks in a radius of 10 tiles around the player and "
+                "Wide-area scan: looks in a radius of 10 tiles around the bot and "
                 "returns a list of notable features (forest, home, road, crate) with "
                 "their compass direction, type, and distance. "
                 "Great for planning where to go next. Costs 1 energy."
@@ -612,7 +612,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "OpenCrate",
             "description": (
-                "Open the crate on the player's current tile. "
+                "Open the crate on the bot's current tile. "
                 "The crate must be a 'crate' tile. Reveals how much energy is inside. "
                 "Costs 1 energy."
             ),
@@ -628,9 +628,9 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "TakeAllFromCrate",
             "description": (
-                "Take all energy from the opened crate on the player's current tile. "
+                "Take all energy from the opened crate on the bot's current tile. "
                 "The crate must have been opened first with OpenCrate. "
-                "Adds the crate's energy to the player's energy. "
+                "Adds the crate's energy to the bot's energy. "
                 "Costs 1 energy."
             ),
             "parameters": {
@@ -673,11 +673,11 @@ _PLAY_BASE_PROMPT = (
 
 
 def _print_step_status() -> None:
-    """Print the player's current surroundings, energy, and inventory."""
-    gx, gy = _player_grid_pos()
+    """Print the bot's current surroundings, energy, and inventory."""
+    gx, gy = _bot_grid_pos()
     print(f"\n  === STATUS ===")
-    print(f"  Energy: {player_energy}  |  Position: tile ({gx}, {gy})")
-    print(f"  Inventory: {player_inventory if player_inventory else '(empty)'}")
+    print(f"  Energy: {bot_energy}  |  Position: tile ({gx}, {gy})")
+    print(f"  Inventory: {bot_inventory if bot_inventory else '(empty)'}")
     print(f"  Surroundings:")
     with tiles_lock:
         for dy in range(-1, 2):
@@ -735,7 +735,7 @@ def _run_ollama_play_loop() -> None:
         # Print any text the model said
         content = msg.get("content", "") or ""
         if content.strip():
-            print(f"  [LLM] {content.strip()}")
+            print(f"  [Bot] {content.strip()}")
 
         messages.append(msg)
 
@@ -743,7 +743,7 @@ def _run_ollama_play_loop() -> None:
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
             # No tool calls — nudge the model to keep going
-            print("  [System] No tool call — nudging LLM to continue exploring.")
+            print("  [System] No tool call — nudging bot to continue exploring.")
             messages.append({
                 "role": "user",
                 "content": "Keep exploring! Use GetInfo to look around or Move to go somewhere.",
@@ -787,7 +787,7 @@ def _run_ollama_play_loop() -> None:
         _print_step_status()
 
         # Check for death
-        if player_energy <= 0:
+        if bot_energy <= 0:
             print("\n  *** ROBOT SHUT DOWN — OUT OF ENERGY ***")
             break
 
@@ -803,7 +803,7 @@ def _start_scenery_generation() -> None:
 
 
 def update(dt: float) -> None:
-    global player_x, player_y
+    global bot_x, bot_y
 
     dx = 0
     dy = 0
@@ -817,11 +817,11 @@ def update(dt: float) -> None:
     if keyboard.d:
         dx += 1
 
-    player_x += dx * PLAYER_SPEED * dt
-    player_y += dy * PLAYER_SPEED * dt
+    bot_x += dx * BOT_SPEED * dt
+    bot_y += dy * BOT_SPEED * dt
 
-    player_x = max(PLAYER_RADIUS, min(WIDTH - PLAYER_RADIUS, player_x))
-    player_y = max(PLAYER_RADIUS, min(HEIGHT - PLAYER_RADIUS, player_y))
+    bot_x = max(BOT_RADIUS, min(WIDTH - BOT_RADIUS, bot_x))
+    bot_y = max(BOT_RADIUS, min(HEIGHT - BOT_RADIUS, bot_y))
 
 
 def draw() -> None:
@@ -836,7 +836,7 @@ def draw() -> None:
                     Rect((x * TILE_SIZE, y * TILE_SIZE), (TILE_SIZE, TILE_SIZE)), color
                 )
 
-    screen.draw.filled_circle((player_x, player_y), PLAYER_RADIUS, (0, 120, 255))
+    screen.draw.filled_circle((bot_x, bot_y), BOT_RADIUS, (0, 120, 255))
 
 
 def run() -> None:
