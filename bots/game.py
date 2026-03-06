@@ -183,14 +183,14 @@ def _place_road_v(x: int, y0: int, y1: int) -> int:
 
 
 def _place_road_l(x0: int, y0: int, x1: int, y1: int) -> int:
-    """Place an L-shaped road: first horizontal, then vertical."""
+    """Place an L-shaped road: first horizontal then vertical."""
     count = _place_road_h(y0, x0, x1)
     count += _place_road_v(x1, y0, y1)
     return count
 
 
 def _build_scenery_procedural() -> None:
-    """Generate a maze-like map with forests, lakes, roads, village, and crates."""
+    """Generate a maze-like map with forests, lakes, grid roads, village, and crates."""
     t0 = time.time()
     total = 0
     print("Generating map procedurally...")
@@ -199,16 +199,14 @@ def _build_scenery_procedural() -> None:
     # Horizontal roads (east-west)
     h_roads = [10, 25, 40, 55, 70]
     for ry in h_roads:
-        n = _place_road_h(ry, 2, GRID_WIDTH - 3)
-        total += n
+        total += _place_road_h(ry, 2, GRID_WIDTH - 3)
 
     # Vertical roads (north-south)
     v_roads = [10, 30, 50, 70, 90]
     for rx in v_roads:
-        n = _place_road_v(rx, 2, GRID_HEIGHT - 3)
-        total += n
+        total += _place_road_v(rx, 2, GRID_HEIGHT - 3)
 
-    # A few extra short connecting roads for variety
+    # Extra short connecting roads for variety
     total += _place_road_h(33, 10, 50)
     total += _place_road_h(48, 50, 90)
     total += _place_road_v(20, 10, 40)
@@ -218,39 +216,37 @@ def _build_scenery_procedural() -> None:
 
     # --- Forests filling maze cells (between roads) ---
     forests = [
-        # (cx, cy, rx, ry) — positioned in cells between road grid lines
-        (20, 17, 7, 5),    # between h10-h25, v10-v30
-        (40, 17, 6, 5),    # between h10-h25, v30-v50
-        (60, 32, 7, 5),    # between h25-h40, v50-v70
-        (80, 17, 6, 5),    # between h10-h25, v70-v90
-        (20, 48, 7, 5),    # between h40-h55, v10-v30
-        (80, 48, 7, 5),    # between h40-h55, v70-v90
-        (40, 62, 7, 5),    # between h55-h70, v30-v50
-        (80, 62, 7, 5),    # between h55-h70, v70-v90
-        (15, 62, 5, 4),    # small forest bottom-left
-        (60, 48, 5, 4),    # small forest center
+        # (cx, cy, rx, ry)
+        (20, 17, 7, 5),
+        (40, 17, 6, 5),
+        (60, 32, 7, 5),
+        (80, 17, 6, 5),
+        (20, 48, 7, 5),
+        (80, 48, 7, 5),
+        (40, 62, 7, 5),
+        (80, 62, 7, 5),
+        (15, 62, 5, 4),
+        (60, 48, 5, 4),
     ]
     for cx, cy, rx, ry in forests:
-        n = _place_ellipse(cx, cy, rx, ry, "forest", jitter=0.4)
-        total += n
+        total += _place_ellipse(cx, cy, rx, ry, "forest", jitter=0.4)
     print(f"  Forests: {len(forests)} clusters done")
 
     # --- Lakes with sand beaches (in several maze cells) ---
     lakes = [
         # (cx, cy, rx, ry)
-        (60, 17, 6, 5),    # between h10-h25, v50-v70
-        (40, 33, 5, 4),    # between h25-h40, v30-v50
-        (20, 33, 5, 4),    # between h25-h40, v10-v30
-        (80, 33, 5, 4),    # between h25-h40, v70-v90
-        (40, 48, 4, 3),    # small pond center
+        (60, 17, 6, 5),
+        (40, 33, 5, 4),
+        (20, 33, 5, 4),
+        (80, 33, 5, 4),
+        (40, 48, 4, 3),
     ]
     for cx, cy, rx, ry in lakes:
         _place_border(cx, cy, rx, ry, "sand", thickness=2)
-        n = _place_ellipse(cx, cy, rx, ry, "water", jitter=0.25)
-        total += n
+        total += _place_ellipse(cx, cy, rx, ry, "water", jitter=0.25)
     print(f"  Lakes: {len(lakes)} done")
 
-    # --- Village (center-bottom area) ---
+    # --- Village (center area) ---
     village_homes = [
         (52, 57), (55, 57), (52, 60), (55, 60), (58, 63),
     ]
@@ -260,7 +256,6 @@ def _build_scenery_procedural() -> None:
         CreateTile(hx, hy + 1, "home")
         CreateTile(hx + 1, hy + 1, "home")
         total += 4
-    # Connect village homes with short L-roads
     for i in range(len(village_homes) - 1):
         hx0, hy0 = village_homes[i]
         hx1, hy1 = village_homes[i + 1]
@@ -274,7 +269,6 @@ def _build_scenery_procedural() -> None:
         attempts += 1
         cx = random.randint(2, GRID_WIDTH - 3)
         cy = random.randint(2, GRID_HEIGHT - 3)
-        # Only place on grass
         if tiles.get((cx, cy)) == "grass":
             CreateTile(cx, cy, "crate")
             crate_contents[(cx, cy)] = {
@@ -481,10 +475,10 @@ def _tile_direction(dx: int, dy: int) -> str:
 
 
 def LookFar() -> dict[str, Any]:
-    """Scan a wide area (radius 10) and return notable features with direction and distance."""
+    """Scan a wide area (radius 50) and return notable features with direction and distance."""
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
-    radius = 20
+    radius = 50
 
     features: list[dict[str, Any]] = []
     with tiles_lock:
@@ -494,6 +488,7 @@ def LookFar() -> dict[str, Any]:
                 if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
                     continue
                 t = tile_matrix[nx][ny]
+                time.sleep(0.001)  # simulate processing time per tile
                 if t.type in _PANORAMA_TYPES:
                     dist = max(abs(dx), abs(dy))  # Chebyshev distance
                     direction = _tile_direction(dx, dy)
@@ -660,7 +655,7 @@ _OLLAMA_TOOLS = [
         "function": {
             "name": "LookFar",
             "description": (
-                "Wide-area scan: looks in a radius of 20 tiles around the bot and "
+                "Wide-area scan: looks in a radius of 50 tiles around the bot and "
                 "returns a list of notable features (forest, home, road, crate) with "
                 "their compass direction, type, and distance. "
                 "Great for planning where to go next. Costs 1 energy."
@@ -710,12 +705,13 @@ _OLLAMA_TOOLS = [
 _PLAY_BASE_PROMPT = (
     "You are a robot explorer in a 2D tile-based RPG world. "
     f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
+    "All coordinates are TILE coordinates (x,y in grid), not pixel coordinates. "
     "You run on battery. Your starting energy is 1000. "
     "Every action (Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate) costs 1 energy. "
     "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
     "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-    "- LookFar: wide scan (radius 20). Returns notable features (forest, home, road, crate) "
+    "- LookFar: wide scan (radius 50). Returns notable features (forest, home, road, crate) "
     "with direction and distance. Use this to plan your route!\n"
     "- Move(direction, distance): move 1-10 tiles in 8 directions (north/south/east/west/ne/nw/se/sw). "
     "Distance is limited by terrain: road=10, grass/sand/home/crate=5, forest=1, water=0 (impassable). "
