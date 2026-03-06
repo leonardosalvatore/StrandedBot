@@ -25,7 +25,12 @@ TILE_SIZE = 10
 GRID_WIDTH = MAP_WIDTH // TILE_SIZE
 GRID_HEIGHT = MAP_HEIGHT // TILE_SIZE
 
-BOT_RADIUS = 12
+# Camera/viewport settings
+VIEWPORT_TILES_W = 50  # Show 50x50 tile area
+VIEWPORT_TILES_H = 50
+DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W  # 50px per tile when rendered
+
+BOT_RADIUS = 10
 BOT_SPEED = 220
 
 TILE_TYPES = {"grass", "sand", "water", "forest", "home", "road", "crate"}
@@ -70,8 +75,8 @@ class Tile:
     description: str = field(default="A flat patch of green grass.")
 
 
-bot_x = random.randint(BOT_RADIUS, MAP_WIDTH - BOT_RADIUS)
-bot_y = random.randint(BOT_RADIUS, MAP_HEIGHT - BOT_RADIUS)
+bot_x = 300
+bot_y = 300
 bot_target_x: float = bot_x
 bot_target_y: float = bot_y
 bot_energy = 100
@@ -924,13 +929,36 @@ def draw() -> None:
     global _SPRITE_SHEET
     screen.clear()
 
+    # Camera position (centered on bot)
+    gx, gy = _bot_grid_pos()
+    cam_tile_x = gx
+    cam_tile_y = gy
+
+    # Calculate visible tile range (50x50 centered on bot)
+    half_w = VIEWPORT_TILES_W // 2
+    half_h = VIEWPORT_TILES_H // 2
+    tile_x_start = max(0, cam_tile_x - half_w)
+    tile_x_end = min(GRID_WIDTH, cam_tile_x + half_w + 1)
+    tile_y_start = max(0, cam_tile_y - half_h)
+    tile_y_end = min(GRID_HEIGHT, cam_tile_y + half_h + 1)
+
+    # Camera center in world pixel coords
+    cam_world_x = bot_x
+    cam_world_y = bot_y
+
     with tiles_lock:
-        for x in range(GRID_WIDTH):
-            for y in range(GRID_HEIGHT):
-                tile_type = tiles.get((x, y), "grass")
+        for tx in range(tile_x_start, tile_x_end):
+            for ty in range(tile_y_start, tile_y_end):
+                tile_type = tiles.get((tx, ty), "grass")
                 color = TILE_COLORS[tile_type]
+                # World position of this tile
+                world_x = tx * TILE_SIZE
+                world_y = ty * TILE_SIZE
+                # Screen position (camera-relative, scaled up)
+                screen_x = (world_x - cam_world_x) * (DRAW_TILE_SIZE / TILE_SIZE) + MAP_WIDTH / 2
+                screen_y = (world_y - cam_world_y) * (DRAW_TILE_SIZE / TILE_SIZE) + MAP_HEIGHT / 2
                 screen.draw.filled_rect(
-                    Rect((x * TILE_SIZE, y * TILE_SIZE), (TILE_SIZE, TILE_SIZE)), color
+                    Rect((int(screen_x), int(screen_y)), (DRAW_TILE_SIZE, DRAW_TILE_SIZE)), color
                 )
 
     # Load spritesheet on first draw (pygame is initialised by now)
@@ -942,8 +970,9 @@ def draw() -> None:
             print(f"  [Sprite] Loaded spritesheet from package resources")
         except Exception as e:
             print(f"  [Sprite] Failed to load bots.png: {e}")
-            # Fallback: draw circle
-            screen.draw.filled_circle((bot_x, bot_y), BOT_RADIUS, (0, 120, 255))
+            # Fallback: draw circle at screen center (camera follows bot)
+            radius_scaled = int(BOT_RADIUS * (DRAW_TILE_SIZE / TILE_SIZE))
+            screen.draw.filled_circle((MAP_WIDTH // 2, MAP_HEIGHT // 2), radius_scaled, (0, 120, 255))
             return
 
     # Pick the right sprite sub-rect based on bot_state
@@ -954,13 +983,14 @@ def draw() -> None:
     )
     sprite = _SPRITE_SHEET.subsurface(src_rect)
 
-    # Scale sprite to fit BOT_RADIUS * 2
-    draw_size = BOT_RADIUS * 6
+    # Scale sprite to fit in the zoomed view
+    # Bot is always at screen center when camera follows it
+    draw_size = int(BOT_RADIUS * 6 * (DRAW_TILE_SIZE / TILE_SIZE))
     scaled = pygame.transform.smoothscale(sprite, (draw_size, draw_size))
 
-    # Blit centered on bot position
-    dest_x = int(bot_x) - draw_size // 2
-    dest_y = int(bot_y) - draw_size // 2
+    # Bot draws at screen center (camera follows bot)
+    dest_x = int(MAP_WIDTH / 2) - draw_size // 2
+    dest_y = int(MAP_HEIGHT / 2) - draw_size // 2
     screen.surface.blit(scaled, (dest_x, dest_y))
 
     # --- Right sidebar (stats) ---
