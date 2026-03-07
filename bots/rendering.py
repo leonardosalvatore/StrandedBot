@@ -2,6 +2,8 @@ import importlib.resources
 from typing import Any
 
 import pygame
+import pygame_gui
+from pygame_gui.elements import UIWindow, UITextBox
 
 
 _SPRITE_SHEET: pygame.Surface | None = None
@@ -15,12 +17,148 @@ _STATE_SPRITE_POS: dict[str, tuple[int, int]] = {
     "Charging": (2, 1),
 }
 
+# pygame_gui manager and windows
+_ui_manager: pygame_gui.UIManager | None = None
+_stats_window: UIWindow | None = None
+_log_window: UIWindow | None = None
+_speech_window: UIWindow | None = None
+_input_window: UIWindow | None = None
+_stats_text: UITextBox | None = None
+_log_text: UITextBox | None = None
+_speech_text: UITextBox | None = None
+_last_log_html: str | None = None
+_last_speech_html: str | None = None
+_last_stats_html: str | None = None
 
-def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str) -> None:
+
+def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.UIManager:
+    """Initialize pygame_gui manager and create the 4 UI windows."""
+    global _ui_manager, _stats_window, _log_window, _speech_window, _input_window
+    global _stats_text, _log_text, _speech_text
+    
+    _ui_manager = pygame_gui.UIManager(screen_size)
+    
+    # 1. Bot Stats Window (top-right)
+    _stats_window = UIWindow(
+        rect=pygame.Rect((screen_size[0] - 320, 10), (310, 200)),
+        manager=_ui_manager,
+        window_display_title="Bot Stats",
+        resizable=True,
+    )
+    _stats_text = UITextBox(
+        html_text="<font size=4>Initializing...</font>",
+        relative_rect=pygame.Rect((0, 0), (290, 160)),
+        manager=_ui_manager,
+        container=_stats_window,
+    )
+    
+    # 2. Message Log Window (left side)
+    _log_window = UIWindow(
+        rect=pygame.Rect((10, 10), (400, 300)),
+        manager=_ui_manager,
+        window_display_title="Message Log",
+        resizable=True,
+    )
+    _log_text = UITextBox(
+        html_text="<font size=3>Message log started...</font>",
+        relative_rect=pygame.Rect((0, 0), (380, 260)),
+        manager=_ui_manager,
+        container=_log_window,
+    )
+    
+    # 3. Bot Speech Window (bottom)
+    _speech_window = UIWindow(
+        rect=pygame.Rect((10, screen_size[1] - 210), (600, 200)),
+        manager=_ui_manager,
+        window_display_title="Bot Speech",
+        resizable=True,
+    )
+    _speech_text = UITextBox(
+        html_text="<font size=4>Waiting for bot to speak...</font>",
+        relative_rect=pygame.Rect((0, 0), (580, 160)),
+        manager=_ui_manager,
+        container=_speech_window,
+    )
+    
+    # 4. User Input Window (bottom-right, non-functional for now)
+    _input_window = UIWindow(
+        rect=pygame.Rect((screen_size[0] - 420, screen_size[1] - 210), (410, 200)),
+        manager=_ui_manager,
+        window_display_title="User Input (Coming Soon)",
+        resizable=True,
+    )
+    UITextBox(
+        html_text="<font size=4><i>User input functionality coming soon...</i></font>",
+        relative_rect=pygame.Rect((0, 0), (390, 160)),
+        manager=_ui_manager,
+        container=_input_window,
+    )
+    
+    message_log.start_capture()
+    return _ui_manager
+
+
+def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any) -> None:
+    """Update the content of all UI panels."""
+    if not _ui_manager:
+        return
+        
+    gx, gy = game_logic._bot_grid_pos()
+    tgx = max(0, min(game_logic.GRID_WIDTH - 1, int(game_logic.bot_target_x) // game_logic.TILE_SIZE))
+    tgy = max(0, min(game_logic.GRID_HEIGHT - 1, int(game_logic.bot_target_y) // game_logic.TILE_SIZE))
+    
+    # Update Bot Stats
+    if _stats_text:
+        stats_html = (
+            "<font size=4>"
+            f"<b>Energy:</b> {game_logic.bot_energy}<br>"
+            f"<b>Position:</b> ({gx}, {gy})<br>"
+            f"<b>Target:</b> ({tgx}, {tgy})<br>"
+            f"<b>State:</b> {game_logic.bot_state}<br>"
+            f"<b>Model:</b> {ollama_model}"
+            "</font>"
+        )
+        global _last_stats_html
+        if stats_html != _last_stats_html:
+            _stats_text.html_text = stats_html
+            _stats_text.rebuild()
+            _last_stats_html = stats_html
+    
+    # Update Message Log (last 50 messages)
+    if _log_text:
+        messages = message_log.get_messages(50)
+        log_html = "<font size=3>" + "<br>".join(messages[-50:]) + "</font>"
+        global _last_log_html
+        if log_html != _last_log_html:
+            should_follow = False
+            if hasattr(_log_text, "scroll_bar") and _log_text.scroll_bar:
+                # Only auto-follow if user is already near the bottom.
+                should_follow = _log_text.scroll_bar.scroll_position >= (
+                    _log_text.scroll_bar.bottom_limit - 5
+                )
+            _log_text.html_text = log_html
+            _log_text.rebuild()
+            _last_log_html = log_html
+            if should_follow and _log_text.scroll_bar:
+                _log_text.scroll_bar.scroll_position = _log_text.scroll_bar.bottom_limit
+    
+    # Update Bot Speech
+    if _speech_text and game_logic.bot_last_speech:
+        speech_html = f'<font size=4>🤖 {game_logic.bot_last_speech}</font>'
+        global _last_speech_html
+        if speech_html != _last_speech_html:
+            _speech_text.html_text = speech_html
+            _speech_text.rebuild()
+            _last_speech_html = speech_html
+
+
+def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str, message_log: Any = None) -> None:
+    """Draw the game map and bot sprite (UI windows are drawn separately by pygame_gui)."""
     global _SPRITE_SHEET
-
-    screen.clear()
-
+    
+    # Clear only the map area (not UI)
+    screen.surface.fill((0, 0, 0))
+    
     gx, gy = game_logic._bot_grid_pos()
     cam_tile_x = gx
     cam_tile_y = gy
@@ -35,6 +173,7 @@ def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str) -> Non
     cam_world_x = game_logic.bot_x
     cam_world_y = game_logic.bot_y
 
+    # Draw tiles
     with game_logic.tiles_lock:
         for tx in range(tile_x_start, tile_x_end):
             for ty in range(tile_y_start, tile_y_end):
@@ -44,17 +183,21 @@ def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str) -> Non
                 world_y = ty * game_logic.TILE_SIZE
                 screen_x = (
                     (world_x - cam_world_x) * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE)
-                    + game_logic.MAP_WIDTH / 2
+                    + game_logic.WIDTH / 2
                 )
                 screen_y = (
                     (world_y - cam_world_y) * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE)
-                    + game_logic.MAP_HEIGHT / 2
+                    + game_logic.HEIGHT / 2
                 )
-                screen.draw.filled_rect(
-                    Rect((int(screen_x), int(screen_y)), (game_logic.DRAW_TILE_SIZE, game_logic.DRAW_TILE_SIZE)),
-                    color,
-                )
+                # Only draw if within screen bounds
+                if 0 <= screen_x < game_logic.WIDTH and 0 <= screen_y < game_logic.HEIGHT:
+                    pygame.draw.rect(
+                        screen.surface,
+                        color,
+                        pygame.Rect(int(screen_x), int(screen_y), game_logic.DRAW_TILE_SIZE, game_logic.DRAW_TILE_SIZE)
+                    )
 
+    # Load spritesheet on first draw
     if _SPRITE_SHEET is None:
         try:
             resource = importlib.resources.files("bots.resources").joinpath("bots.png")
@@ -64,13 +207,15 @@ def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str) -> Non
         except Exception as exc:
             print(f"  [Sprite] Failed to load bots.png: {exc}")
             radius_scaled = int(game_logic.BOT_RADIUS * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE))
-            screen.draw.filled_circle(
-                (game_logic.MAP_WIDTH // 2, game_logic.MAP_HEIGHT // 2),
-                radius_scaled,
+            pygame.draw.circle(
+                screen.surface,
                 (0, 120, 255),
+                (game_logic.WIDTH // 2, game_logic.HEIGHT // 2),
+                radius_scaled,
             )
             return
 
+    # Draw bot sprite at screen center
     col, row = _STATE_SPRITE_POS.get(game_logic.bot_state, (0, 0))
     src_rect = pygame.Rect(
         col * _SPRITE_SIZE,
@@ -83,77 +228,15 @@ def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str) -> Non
     draw_size = int(game_logic.BOT_RADIUS * 6 * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE))
     scaled = pygame.transform.smoothscale(sprite, (draw_size, draw_size))
 
-    dest_x = int(game_logic.MAP_WIDTH / 2) - draw_size // 2
-    dest_y = int(game_logic.MAP_HEIGHT / 2) - draw_size // 2
+    dest_x = int(game_logic.WIDTH / 2) - draw_size // 2
+    dest_y = int(game_logic.HEIGHT / 2) - draw_size // 2
     screen.surface.blit(scaled, (dest_x, dest_y))
+    
+    # Update UI panels with latest data
+    if message_log:
+        update_ui_panels(game_logic, ollama_model, message_log)
 
-    sidebar_x = game_logic.MAP_WIDTH
-    screen.draw.filled_rect(
-        Rect((sidebar_x, 0), (game_logic.SIDEBAR_WIDTH, game_logic.MAP_HEIGHT)),
-        (20, 20, 30),
-    )
-    screen.draw.line((sidebar_x, 0), (sidebar_x, game_logic.MAP_HEIGHT), (60, 60, 80))
 
-    pad = 10
-    font_stats = pygame.font.SysFont("monospace", 16, bold=True)
-    stat_lh = font_stats.get_linesize()
-    sx = sidebar_x + pad
-    sy = pad
-
-    gx, gy = game_logic._bot_grid_pos()
-    tgx = max(0, min(game_logic.GRID_WIDTH - 1, int(game_logic.bot_target_x) // game_logic.TILE_SIZE))
-    tgy = max(0, min(game_logic.GRID_HEIGHT - 1, int(game_logic.bot_target_y) // game_logic.TILE_SIZE))
-
-    stat_lines = [
-        f"Energy: {game_logic.bot_energy}",
-        f"Pos: ({gx}, {gy})",
-        f"Target: ({tgx}, {tgy})",
-        f"State: {game_logic.bot_state}",
-        "",
-        "Model:",
-        f" {ollama_model}",
-    ]
-    for i, line in enumerate(stat_lines):
-        color = (180, 220, 255) if i < 4 else (140, 160, 200)
-        surf = font_stats.render(line, True, color)
-        screen.surface.blit(surf, (sx, sy + i * stat_lh))
-
-    panel_y = game_logic.MAP_HEIGHT
-    screen.draw.filled_rect(
-        Rect((0, panel_y), (game_logic.WIDTH, game_logic.PANEL_HEIGHT)),
-        (20, 20, 30),
-    )
-    screen.draw.line((0, panel_y), (game_logic.WIDTH, panel_y), (60, 60, 80))
-
-    padding = 14
-    font_speech = pygame.font.SysFont("monospace", 22)
-
-    if game_logic.bot_last_speech:
-        speech_y = panel_y + padding
-        line_height = font_speech.get_linesize()
-        max_width = game_logic.WIDTH - padding * 2 - 30
-
-        words = game_logic.bot_last_speech.split()
-        lines: list[str] = []
-        current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            if font_speech.size(test)[0] <= max_width:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-
-        remaining = game_logic.PANEL_HEIGHT - padding * 2
-        max_lines = max(1, remaining // line_height)
-        if len(lines) > max_lines:
-            lines = lines[:max_lines]
-            lines[-1] = lines[-1][:-3] + "..." if len(lines[-1]) > 3 else "..."
-
-        for i, line in enumerate(lines):
-            prefix = "🤖 " if i == 0 else "   "
-            text_surface = font_speech.render(f"{prefix}{line}", True, (220, 220, 220))
-            screen.surface.blit(text_surface, (padding, speech_y + i * line_height))
+def get_ui_manager() -> pygame_gui.UIManager | None:
+    """Get the pygame_gui manager for event processing."""
+    return _ui_manager

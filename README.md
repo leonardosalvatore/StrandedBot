@@ -36,9 +36,18 @@ poetry run pytest <test_name>  # or poetry run python -m pytest ...
   - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `OpenCrate`, `TakeAllFromCrate`)
   - Movement update loop and status helpers
 
-- **`bots/rendering.py`** - Drawing/UI layer:
-  - Camera and map rendering
-  - Bot sprite rendering and HUD/speech panel
+- **`bots/rendering.py`** - Drawing/UI layer (pygame_gui):
+  - Map and bot sprite rendering
+  - 4 movable UI windows:
+    - **Bot Stats**: Energy, position, target, state, model
+    - **Message Log**: Captured print() output
+    - **Bot Speech**: Last LLM response
+    - **User Input**: (Coming soon) Direct LLM steering
+  - UI manager initialization and updates
+
+- **`bots/message_log.py`** - Print output capture:
+  - Intercepts print() calls to populate Message Log window
+  - Thread-safe message buffer
 
 - **`bots/ollama_agent.py`** - Ollama integration:
   - Prompt/tool schema construction
@@ -51,6 +60,7 @@ poetry run pytest <test_name>  # or poetry run python -m pytest ...
 
 - **pgzero** - Pygame Zero game framework (v1.2.1+)
 - **ollama** - Python client for Ollama AI (v0.6.1+)
+- **pygame-gui** - GUI library for pygame (v0.6.0+)
 
 ### Environment Variables
 
