@@ -27,14 +27,22 @@ poetry run pytest <test_name>  # or poetry run python -m pytest ...
 
 ### Core Files
 
-- **`bots/game.py`** - Main Pygame Zero game logic:
-  - `update(dt)` - Handles player movement with WASD keys
-  - `draw()` - Renders tiles and player on screen
-  - Procedural map generation (lake, forests, village, roads, pond)
-  - `Tile` dataclass with x, y, type, color, description
-  - `tile_matrix` - 2D matrix of `Tile` objects for O(1) lookup
-  - Ollama LLM play mode with `Move()` / `GetInfo()` tool-calling
-  - Uses `pgzrun.go()` to start the game loop
+- **`bots/game.py`** - Thin Pygame Zero entrypoint/orchestrator:
+  - Initializes world and optional Ollama play thread
+  - Exposes `update(dt)` and `draw()` expected by `pgzero`
+
+- **`bots/game_logic.py`** - Core game state and mechanics:
+  - Tile/map data structures and procedural generation
+  - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `OpenCrate`, `TakeAllFromCrate`)
+  - Movement update loop and status helpers
+
+- **`bots/rendering.py`** - Drawing/UI layer:
+  - Camera and map rendering
+  - Bot sprite rendering and HUD/speech panel
+
+- **`bots/ollama_agent.py`** - Ollama integration:
+  - Prompt/tool schema construction
+  - Tool-calling loop and model lifecycle helpers
 
 - **`bots/cli.py`** - CLI entry point:
   - Launches game via `pgzrun`
