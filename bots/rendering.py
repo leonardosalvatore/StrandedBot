@@ -1,4 +1,5 @@
 import importlib.resources
+import time
 from typing import Any
 
 import pygame
@@ -115,6 +116,7 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any) -> No
             f"<b>Position:</b> ({gx}, {gy})<br>"
             f"<b>Target:</b> ({tgx}, {tgy})<br>"
             f"<b>State:</b> {game_logic.bot_state}<br>"
+            f"<b>Solar Flare in:</b> {game_logic.STEPS_TO_SOLAR_FLARE}<br>"
             f"<b>Model:</b> {ollama_model}"
             "</font>"
         )
@@ -232,9 +234,36 @@ def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str, messag
     dest_y = int(game_logic.HEIGHT / 2) - draw_size // 2
     screen.surface.blit(scaled, (dest_x, dest_y))
     
+    # Draw solar flare flash effect if active
+    _draw_solar_flare_flash(screen, game_logic)
+    
     # Update UI panels with latest data
     if message_log:
         update_ui_panels(game_logic, ollama_model, message_log)
+
+
+def _draw_solar_flare_flash(screen: Any, game_logic: Any) -> None:
+    """Draw bright yellow flash overlay when solar flare hits (10 flashes in 2 seconds)."""
+    if not game_logic.solar_flare_animation_active:
+        return
+    
+    elapsed = time.time() - game_logic.solar_flare_animation_start_time
+    
+    # Animation lasts 2 seconds
+    if elapsed >= 2.0:
+        game_logic.solar_flare_animation_active = False
+        return
+    
+    # 10 flashes in 2 seconds = flash every 0.2 seconds
+    # Each flash cycle: 0.1s on, 0.1s off
+    cycle_position = (elapsed % 0.2) / 0.2  # 0.0 to 1.0 within each 0.2s cycle
+    
+    # Show flash during first half of each cycle (0.0 to 0.5)
+    if cycle_position < 0.5:
+        flash_surface = pygame.Surface(screen.surface.get_size())
+        flash_surface.set_alpha(200)  # Semi-transparent
+        flash_surface.fill((255, 255, 0))  # Bright yellow
+        screen.surface.blit(flash_surface, (0, 0))
 
 
 def get_ui_manager() -> pygame_gui.UIManager | None:
