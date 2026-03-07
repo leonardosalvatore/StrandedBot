@@ -33,14 +33,13 @@ DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W  # 50px per tile when rendered
 BOT_RADIUS = 10
 BOT_SPEED = 220
 
-TILE_TYPES = {"grass", "sand", "water", "forest", "home", "road", "crate"}
+TILE_TYPES = {"grass", "sand", "water", "forest", "home", "crate"}
 TILE_COLORS = {
     "grass": (80, 170, 80),
     "sand": (220, 200, 120),
     "water": (70, 130, 220),
     "forest": (30, 110, 30),
     "home": (190, 120, 90),
-    "road": (120, 120, 120),
     "crate": (200, 50, 50),
 }
 
@@ -49,8 +48,7 @@ TILE_DESCRIPTIONS = {
     "sand": "Warm, loose sand.",
     "water": "Clear, shimmering water.",
     "forest": "Dense trees and undergrowth.",
-    "home": "A small dwelling.",
-    "road": "A well-trodden dirt path.",
+    "home": "A wall of bricks.",
     "crate": "A mysterious red crate. It might contain energy cells.",
 }
 
@@ -61,7 +59,6 @@ TILE_MAX_DISTANCE: dict[str, int] = {
     "water": 0,
     "forest": 1,
     "home": 5,
-    "road": 10,
     "crate": 5,
 }
 
@@ -108,12 +105,12 @@ tile_matrix: list[list[Tile]] = [
 ]
 tiles_lock = threading.Lock()
 
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest") #not colling the tools but output json.
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b") # not moving much
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b") # not calling the tools
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b") #fast but not always call the tools
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b") # fast and funny
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b") # fast and funny, more coherent than 3b
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b") # fast and funny
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b") # fast and funny, more coherent than 3b
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:14b") # too big for my 12GB video card
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "granite4:1b") # too small
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:4b")
@@ -167,61 +164,31 @@ def _place_border(cx: int, cy: int, rx: int, ry: int, tile_type: str, thickness:
     return count
 
 
-def _place_road_h(y: int, x0: int, x1: int) -> int:
-    """Place a horizontal (east-west) road on row y from x0 to x1."""
+def _place_sand_patch(cx: int, cy: int, rx: int, ry: int) -> int:
+    """Place a sand patch without overwriting non-grass tiles."""
     count = 0
-    lo, hi = min(x0, x1), max(x0, x1)
-    for x in range(lo, hi + 1):
-        if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
-            CreateTile(x, y, "road")
-            count += 1
-    return count
-
-
-def _place_road_v(x: int, y0: int, y1: int) -> int:
-    """Place a vertical (north-south) road on column x from y0 to y1."""
-    count = 0
-    lo, hi = min(y0, y1), max(y0, y1)
-    for y in range(lo, hi + 1):
-        if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
-            CreateTile(x, y, "road")
-            count += 1
-    return count
-
-
-def _place_road_l(x0: int, y0: int, x1: int, y1: int) -> int:
-    """Place an L-shaped road: first horizontal then vertical."""
-    count = _place_road_h(y0, x0, x1)
-    count += _place_road_v(x1, y0, y1)
+    for x in range(max(0, cx - rx - 2), min(GRID_WIDTH, cx + rx + 3)):
+        for y in range(max(0, cy - ry - 2), min(GRID_HEIGHT, cy + ry + 3)):
+            dx = (x - cx) / max(1, rx)
+            dy = (y - cy) / max(1, ry)
+            dist = dx * dx + dy * dy
+            noise = random.uniform(-0.25, 0.25)
+            if dist + noise < 1.0:
+                with tiles_lock:
+                    if tiles.get((x, y)) != "grass":
+                        continue
+                CreateTile(x, y, "sand")
+                count += 1
     return count
 
 
 def _build_scenery_procedural() -> None:
-    """Generate a maze-like map with forests, lakes, grid roads, village, and crates."""
+    """Generate a maze-like map with forests, lakes, sand patches, village, and crates."""
     t0 = time.time()
     total = 0
     print("Generating map procedurally...")
 
-    # --- Grid of axis-aligned roads (maze corridors) ---
-    # Horizontal roads (east-west)
-    h_roads = [10, 25, 40, 55, 70]
-    for ry in h_roads:
-        total += _place_road_h(ry, 2, GRID_WIDTH - 3)
-
-    # Vertical roads (north-south)
-    v_roads = [10, 30, 50, 70, 90]
-    for rx in v_roads:
-        total += _place_road_v(rx, 2, GRID_HEIGHT - 3)
-
-    # Extra short connecting roads for variety
-    total += _place_road_h(33, 10, 50)
-    total += _place_road_h(48, 50, 90)
-    total += _place_road_v(20, 10, 40)
-    total += _place_road_v(60, 40, 70)
-    total += _place_road_v(80, 10, 25)
-    print(f"  Roads: done")
-
-    # --- Forests filling maze cells (between roads) ---
+    # --- Forests filling maze cells ---
     forests = [
         # (cx, cy, rx, ry)
         (20, 17, 7, 5),
@@ -253,6 +220,18 @@ def _build_scenery_procedural() -> None:
         total += _place_ellipse(cx, cy, rx, ry, "water", jitter=0.25)
     print(f"  Lakes: {len(lakes)} done")
 
+    # --- Random sand patches ---
+    sand_patches = 18
+    sand_total = 0
+    for _ in range(sand_patches):
+        cx = random.randint(3, GRID_WIDTH - 4)
+        cy = random.randint(3, GRID_HEIGHT - 4)
+        rx = random.randint(3, 7)
+        ry = random.randint(3, 7)
+        sand_total += _place_sand_patch(cx, cy, rx, ry)
+    total += sand_total
+    print(f"  Sand patches: {sand_patches} clusters done")
+
     # --- Village (center area) ---
     village_homes = [
         (52, 57), (55, 57), (52, 60), (55, 60), (58, 63),
@@ -263,10 +242,6 @@ def _build_scenery_procedural() -> None:
         CreateTile(hx, hy + 1, "home")
         CreateTile(hx + 1, hy + 1, "home")
         total += 4
-    for i in range(len(village_homes) - 1):
-        hx0, hy0 = village_homes[i]
-        hx1, hy1 = village_homes[i + 1]
-        total += _place_road_l(hx0, hy0, hx1, hy1)
     print(f"  Village: done")
 
     # --- Random crates with energy ---
@@ -479,11 +454,11 @@ def LookClose() -> dict[str, Any]:
     }
 
 
-_PANORAMA_TYPES = {"forest", "home", "road", "crate"}
+_PANORAMA_TYPES = {"forest", "home", "crate"}
 
 
 def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) -> bool:
-    """Check if forests block line of sight between two tiles using Bresenham's line.
+    """Check if forests or home block line of sight between two tiles using Bresenham's line.
     If blocked by forest, reveal that forest tile."""
     # Use Bresenham line algorithm to walk from start to end
     dx = abs(to_x - from_x)
@@ -498,8 +473,8 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
         # Check if this tile is forest (blocking)
         if (x, y) != (from_x, from_y):  # Don't block on starting position
             if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
-                if tile_matrix[x][y].type == "forest":
-                    # Reveal the blocking forest tile
+                if tile_matrix[x][y].type in {"forest", "home"}:
+                    # Reveal the blocking tile
                     tile_matrix[x][y].fog = False
                     return True  # Line is blocked by forest
         
@@ -662,7 +637,7 @@ _OLLAMA_TOOLS = [
             "description": (
                 "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
                 "The bot will move up to 10 tiles per call, respecting terrain limits and water barriers. "
-                "Terrain limits: road=10 tiles, grass/sand/home/crate=5 tiles, forest=1 tile, water=blocked. "
+                "Terrain limits: grass/sand/home/crate=5 tiles, forest=1 tile, water=blocked. "
                 "Costs 1 energy per tile of movement."
             ),
             "parameters": {
@@ -703,7 +678,7 @@ _OLLAMA_TOOLS = [
             "name": "LookFar",
             "description": (
                 f"Wide-area scan: looks in a radius of {bot_lookfar_distance} tiles around the bot and "
-                "returns a list of notable features (forest, home, road, crate) with "
+                "returns a list of notable features (forest, home, crate) with "
                 "their absolute tile coordinates (x, y), type, and distance. "
                 "Forests block line-of-sight, so features hidden behind forests won't be visible. "
                 "Great for planning where to go next. Costs 1 energy."
@@ -755,24 +730,25 @@ _PLAY_BASE_PROMPT = (
     f"The map is {GRID_WIDTH}x{GRID_HEIGHT} tiles. "
     "All coordinates are TILE coordinates (x,y in grid), not pixel coordinates. "
     f"You run on battery. Your starting energy is {bot_start_energy}. "
-    "Every action (Move, LookClose, LookFar, OpenCrate, TakeAllFromCrate, Thinking) costs at least 1 energy. Moving costs 1 energy per tile. "
+    "Every action (MoveTo, LookClose, LookFar, OpenCrate, TakeAllFromCrate, Thinking) costs at least 1 energy. Moving costs 1 energy per tile. "
     "If your energy reaches 0 you shut down \u2014 game over! "
     "\n\nAvailable tools:\n"
     "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-    f"- LookFar: wide scan (radius {bot_lookfar_distance}). Returns notable features (forest, home, road, crate) "
-    "with direction and distance. Use this to plan your route!\n"
+    f"- LookFar: wide scan (radius {bot_lookfar_distance}). Returns notable features (forest, home, crate) \n"
+    "with coordinates and distance. Use this to plan your route!\n"
+    "Forest and home block line of sight, you cannot see crate behind them, you need to go around."
     "- MoveTo(target_x, target_y): move toward absolute target tile. Specify (x, y) grid coordinates. "
-    "Moves up to 10 tiles per call, respecting terrain limits and water barriers. "
-    "Terrain speed limits: road=10 tiles/call, grass/sand/home/crate=5 tiles/call, forest=1 tile/call, water=blocked. "
+    "Moves up to 10 tiles per call, respecting terrain limits and water barriers. You can move in diagonal too not just straight lines. "
+    "Terrain speed limits: grass/sand/home/crate=5 tiles/call, forest=1 tile/call, water=blocked. "
     "Terrain limit is based on your STARTING tile.\n"
     "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
     "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
-    "\nTile types: grass, sand, water, forest, home, road, crate. "
+    "\nTile types: grass, sand, water, forest, home, crate. "
     "Water is dangerous — avoid it. "
-    "Roads are safe. Homes are rest points. Forests may hide things. "
+    "Forests and home may hide things behind them. "
     "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
     "\n\nStrategy: use LookFar to find crates and notable features, "
-    "MoveTo(x, y) with distant targets on roads for fast travel, moderate distances on grass, "
+    "MoveTo(x, y) with moderate distances on grass or sand, "
     "single tiles in forests. Avoid water! LookClose when close, "
     "then OpenCrate + TakeAllFromCrate to loot energy. "
     "Explore efficiently to conserve battery. "
@@ -868,7 +844,7 @@ def _run_ollama_play_loop() -> None:
             print("  [System] No tool call — nudging bot to continue exploring.")
             messages.append({
                 "role": "user",
-                "content": "Keep exploring! Use LookClose to look around or Move to go somewhere.",
+                "content": "Keep exploring! Use LookClose to look around or MoveTo to go somewhere.",
             })
             time.sleep(1)
             continue
@@ -934,15 +910,6 @@ def update(dt: float) -> None:
     # --- Keyboard: move the target directly ---
     dx = 0
     dy = 0
-
-    if keyboard.w:
-        dy -= 1
-    if keyboard.s:
-        dy += 1
-    if keyboard.a:
-        dx -= 1
-    if keyboard.d:
-        dx += 1
 
     if dx or dy:
         bot_target_x += dx * BOT_SPEED * dt
