@@ -23,7 +23,7 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
                 "description": (
                     "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
                     "The bot will move up to 10 tiles per call, respecting terrain limits and water barriers. "
-                    "Terrain limits: grass/sand/home/crate=5 tiles, forest=1 tile, water=blocked. "
+                    "Terrain limits: gravel/sand/cave/crate=5 tiles, rocks=1 tile, water=blocked. "
                     "Costs 1 energy per tile of movement."
                 ),
                 "parameters": {
@@ -64,9 +64,9 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
                 "name": "LookFar",
                 "description": (
                     f"Wide-area scan: looks in a radius of {lookfar_distance} tiles around the bot and "
-                    "returns a list of notable features (forest, home, crate) with "
+                    "returns a list of notable features (rocks, cave, crate) with "
                     "their absolute tile coordinates (x, y), type, and distance. "
-                    "Forests block line-of-sight, so features hidden behind forests won't be visible. "
+                    "Rock fields block line-of-sight, so features hidden behind rocks won't be visible. "
                     "Great for planning where to go next. Costs 1 energy."
                 ),
                 "parameters": {
@@ -123,23 +123,23 @@ def build_base_prompt(game_logic: Any) -> str:
         "Every {STEPS_SOLAR_FLARE_EVERY} steps there's a solar flare, you need to be in a house or you will be destroyed."
         "\n\nAvailable tools:\n"
         "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-        f"- LookFar: wide scan (radius {game_logic.bot_lookfar_distance}). Returns notable features (forest, home, crate) \n"
+        f"- LookFar: wide scan (radius {game_logic.bot_lookfar_distance}). Returns notable features (rocks, cave, crate) \n"
         "with coordinates and distance. Use this to plan your route!\n"
-        "Forest and home block line of sight, you cannot see crate behind them, you need to go around."
-        "Home save you from the solar flare."
+        "Rocks and caves block line of sight, you cannot see crate behind them, you need to go around."
+        "Caves save you from the solar flare."
         "- MoveTo(target_x, target_y): move toward absolute target tile. Specify (x, y) grid coordinates. "
         "Moves up to 10 tiles per call, respecting terrain limits and water barriers. You can move in diagonal too not just straight lines. "
-        "Terrain speed limits: grass/sand/home/crate=5 tiles/call, forest=1 tile/call, water=blocked. "
+        "Terrain speed limits: gravel/sand/cave/crate=5 tiles/call, rocks=1 tile/call, water=blocked. "
         "Terrain limit is based on your STARTING tile.\n"
         "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
         "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
-        "\nTile types: grass, sand, water, forest, home, crate. "
+        "\nTile types: gravel, sand, water, rocks, cave, crate. "
         "Water is dangerous — avoid it. "
-        "Forests and home may hide things behind them. "
+        "Rocks and caves may hide things behind them. "
         "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
         "\n\nStrategy: use LookFar to find crates and notable features, "
-        "MoveTo(x, y) with moderate distances on grass or sand, "
-        "single tiles in forests. Avoid water! LookClose when close, "
+        "MoveTo(x, y) with moderate distances on gravel or sand, "
+        "single tiles in rock fields. Avoid water! LookClose when close, "
         "then OpenCrate + TakeAllFromCrate to loot energy. "
         "Explore efficiently to conserve battery. "
         "Always explain your reasoning briefly before calling a tool. "

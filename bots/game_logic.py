@@ -29,31 +29,31 @@ STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
 solar_flare_animation_active = False
 solar_flare_animation_start_time = 0.0
 
-TILE_TYPES = {"grass", "sand", "water", "forest", "home", "crate"}
+TILE_TYPES = {"gravel", "sand", "water", "rocks", "cave", "crate"}
 TILE_COLORS = {
-    "grass": (80, 170, 80),
+    "gravel": (140, 120, 100),
     "sand": (220, 200, 120),
     "water": (70, 130, 220),
-    "forest": (30, 110, 30),
-    "home": (190, 120, 90),
+    "rocks": (90, 80, 70),
+    "cave": (140, 110, 90),
     "crate": (200, 50, 50),
 }
 
 TILE_DESCRIPTIONS = {
-    "grass": "A flat patch of green grass.",
+    "gravel": "Loose red gravel and dust.",
     "sand": "Warm, loose sand.",
     "water": "Clear, shimmering water.",
-    "forest": "Dense trees and undergrowth.",
-    "home": "A wall of bricks.",
+    "rocks": "Jagged rocks and boulders.",
+    "cave": "A dark, sheltered cave.",
     "crate": "A mysterious red crate. It might contain energy cells.",
 }
 
 TILE_MAX_DISTANCE: dict[str, int] = {
-    "grass": 5,
+    "gravel": 5,
     "sand": 5,
     "water": 0,
-    "forest": 1,
-    "home": 5,
+    "rocks": 1,
+    "cave": 5,
     "crate": 5,
 }
 
@@ -64,7 +64,7 @@ class Tile:
     y: int
     type: str
     color: tuple[int, int, int] = field(default=(80, 170, 80))
-    description: str = field(default="A flat patch of green grass.")
+    description: str = field(default="Loose red gravel and dust.")
     fog: bool = field(default=True)
 
 
@@ -83,7 +83,7 @@ bot_lookfar_distance = 20
 tiles: dict[tuple[int, int], str] = {}
 crate_contents: dict[tuple[int, int], dict[str, Any]] = {}
 tile_matrix: list[list[Tile]] = [
-    [Tile(x=x, y=y, type="grass") for y in range(GRID_HEIGHT)]
+    [Tile(x=x, y=y, type="gravel") for y in range(GRID_HEIGHT)]
     for x in range(GRID_WIDTH)
 ]
 tiles_lock = threading.Lock()
@@ -126,7 +126,7 @@ def _place_border(cx: int, cy: int, rx: int, ry: int, tile_type: str, thickness:
             noise = random.uniform(-0.15, 0.15)
             if dist_outer + noise < 1.0 and dist_inner + noise >= 1.0:
                 with tiles_lock:
-                    if tiles.get((x, y)) != "grass":
+                    if tiles.get((x, y)) != "gravel":
                         continue
                 CreateTile(x, y, tile_type)
                 count += 1
@@ -143,7 +143,7 @@ def _place_sand_patch(cx: int, cy: int, rx: int, ry: int) -> int:
             noise = random.uniform(-0.25, 0.25)
             if dist + noise < 1.0:
                 with tiles_lock:
-                    if tiles.get((x, y)) != "grass":
+                    if tiles.get((x, y)) != "gravel":
                         continue
                 CreateTile(x, y, "sand")
                 count += 1
@@ -155,7 +155,7 @@ def _build_scenery_procedural() -> None:
     total = 0
     print("Generating map procedurally...")
 
-    forests = [
+    rocks = [
         (20, 17, 7, 5),
         (40, 17, 6, 5),
         (60, 32, 7, 5),
@@ -167,9 +167,9 @@ def _build_scenery_procedural() -> None:
         (15, 62, 5, 4),
         (60, 48, 5, 4),
     ]
-    for cx, cy, rx, ry in forests:
-        total += _place_ellipse(cx, cy, rx, ry, "forest", jitter=0.4)
-    print(f"  Forests: {len(forests)} clusters done")
+    for cx, cy, rx, ry in rocks:
+        total += _place_ellipse(cx, cy, rx, ry, "rocks", jitter=0.4)
+    print(f"  Rocks: {len(rocks)} clusters done")
 
     lakes = [
         (60, 17, 6, 5),
@@ -194,20 +194,20 @@ def _build_scenery_procedural() -> None:
     total += sand_total
     print(f"  Sand patches: {sand_patches} clusters done")
 
-    village_homes = [
+    cave_sites = [
         (52, 57),
         (55, 57),
         (52, 60),
         (55, 60),
         (58, 63),
     ]
-    for hx, hy in village_homes:
-        CreateTile(hx, hy, "home")
-        CreateTile(hx + 1, hy, "home")
-        CreateTile(hx, hy + 1, "home")
-        CreateTile(hx + 1, hy + 1, "home")
+    for hx, hy in cave_sites:
+        CreateTile(hx, hy, "cave")
+        CreateTile(hx + 1, hy, "cave")
+        CreateTile(hx, hy + 1, "cave")
+        CreateTile(hx + 1, hy + 1, "cave")
         total += 4
-    print("  Village: done")
+    print("  Caves: done")
 
     crates_placed = 0
     attempts = 0
@@ -215,7 +215,7 @@ def _build_scenery_procedural() -> None:
         attempts += 1
         cx = random.randint(2, GRID_WIDTH - 3)
         cy = random.randint(2, GRID_HEIGHT - 3)
-        if tiles.get((cx, cy)) == "grass":
+        if tiles.get((cx, cy)) == "gravel":
             CreateTile(cx, cy, "crate")
             crate_contents[(cx, cy)] = {
                 "energy": random.randint(0, 100),
@@ -226,20 +226,20 @@ def _build_scenery_procedural() -> None:
     print(f"  Crates: placed {crates_placed} crates")
 
     elapsed = time.time() - t0
-    print(f"Procedural map complete: {total} non-grass tiles in {elapsed:.3f}s")
+    print(f"Procedural map complete: {total} non-gravel tiles in {elapsed:.3f}s")
 
 
 def _initialize_default_tiles() -> None:
     with tiles_lock:
         for x in range(GRID_WIDTH):
             for y in range(GRID_HEIGHT):
-                tiles[(x, y)] = "grass"
+                tiles[(x, y)] = "gravel"
                 tile_matrix[x][y] = Tile(
                     x=x,
                     y=y,
-                    type="grass",
-                    color=TILE_COLORS["grass"],
-                    description=TILE_DESCRIPTIONS["grass"],
+                    type="gravel",
+                    color=TILE_COLORS["gravel"],
+                    description=TILE_DESCRIPTIONS["gravel"],
                     fog=True,
                 )
 
@@ -293,9 +293,9 @@ def _advance_solar_flare_step() -> bool:
 
     gx, gy = _bot_grid_pos()
     tile_type = tile_matrix[gx][gy].type
-    if tile_type == "home":
+    if tile_type == "cave":
         STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
-        print("  [SolarFlare] Safe in a home. Timer reset.")
+        print("  [SolarFlare] Safe in a cave. Timer reset.")
         return True
 
     bot_energy = 0
@@ -303,7 +303,7 @@ def _advance_solar_flare_step() -> bool:
     # Trigger flash animation
     solar_flare_animation_active = True
     solar_flare_animation_start_time = time.time()
-    print("  [SolarFlare] Bot destroyed by solar flare (not in a home).")
+    print("  [SolarFlare] Bot destroyed by solar flare (not in a cave).")
     return False
 
 
@@ -468,7 +468,7 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
     while True:
         if (x, y) != (from_x, from_y):
             if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
-                if tile_matrix[x][y].type in {"forest", "home"}:
+                if tile_matrix[x][y].type in {"rocks", "cave"}:
                     tile_matrix[x][y].fog = False
                     return True
 
@@ -593,7 +593,7 @@ def TakeAllFromCrate() -> dict[str, Any]:
     crate["energy"] = 0
     bot_energy += gained
 
-    CreateTile(gx, gy, "grass")
+    CreateTile(gx, gy, "gravel")
     del crate_contents[(gx, gy)]
 
     print(f"  [TakeAllFromCrate] Took {gained} energy from crate at ({gx}, {gy}). Bot energy now: {bot_energy}")
