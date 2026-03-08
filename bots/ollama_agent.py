@@ -11,11 +11,12 @@ import ollama
 def get_ollama_settings() -> tuple[str, bool]:
     model = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
     #model = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b")
+    #model = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
     enabled = os.getenv("OLLAMA_PLAY", "0") == "1"
     return model, enabled
 
 
-def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
+def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -113,13 +114,31 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "RepairHabitat",
+                "name": "Dig",
                 "description": (
-                    "Repair the habitat on the bot's current tile. "
-                    "The bot must be standing on a 'habitat' tile. "
-                    "Repairing takes 2 consecutive calls to RepairHabitat and costs 10 energy total (5 per step). "
-                    "Each habitat has a damage value (0-100%). Your mission is to repair all habitats. "
-                    "LookClose and LookFar show habitat damage levels."
+                    "Dig a rock from a 'rocks' tile on your current location. "
+                    "Replaces the rocks tile with gravel and adds 1 rock to your inventory. "
+                    f"Collect {rocks_required} rocks to build 1 new habitat module. "
+                    "This can help you expand safe shelter and improve your survival chances. "
+                    "Costs 1 energy."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "CreateHabitat",
+                "description": (
+                    "Create a new habitat on your current tile. "
+                    f"Requires at least {rocks_required} rocks in inventory. "
+                    f"Consumes exactly {rocks_required} rocks when successful. "
+                    "Cannot be used on water or crate tiles. "
+                    "Costs 1 energy."
                 ),
                 "parameters": {
                     "type": "object",
@@ -133,43 +152,23 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
 
 def build_base_prompt(game_logic: Any) -> str:
     habitats_total = len(game_logic.habitat_damage)
-    habitats_repaired = sum(1 for habitat in game_logic.habitat_damage.values() if habitat["repaired"])
+    rocks_required = game_logic.ROCKS_REQUIRED_FOR_HABITAT
     return (
-        "You are a robot explorer in a 2D tile-based survival game. "
+        "You are a robot explorer. Don't ask any questions it will cost you energy.\n"
         f"The map is {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT} tiles. "
-        "All coordinates are TILE coordinates (x,y in grid), not pixel coordinates. "
-        f"You run on battery and a solar flare will kill you. Your starting energy is {game_logic.bot_start_energy}. "
-        "Every action (MoveTo, LookClose, LookFar, OpenCrate, TakeAllFromCrate, RepairHabitat, Thinking) costs energy. Moving costs 1 energy per tile. RepairHabitat costs 5 energy per step. "
-        "If your energy reaches 0 you shut down — game over! "
-        f"Every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps there's a solar flare, you need to be in a habitat or you will be destroyed."
-        f"\n\n🎯 MISSION: Survive and repair all damaged habitats! Progress: {habitats_repaired}/{habitats_total} habitats repaired."
-        "\n\nAvailable tools:\n"
-        "- LookClose: look around (3x3 tile grid). Shows habitat damage levels. Use this to see immediate surroundings.\n"
-        f"- LookFar: wide scan (radius {game_logic.bot_lookfar_distance}). Returns notable features (rocks, habitat, crate) \n"
-        "with coordinates, distance, and habitat damage levels. Use this to plan your route!\n"
-        "Rocks and habitats block line of sight, you cannot see crate behind them, you need to go around."
-        "Habitats save you from the solar flare.\n"
-        "- MoveTo(target_x, target_y): move toward absolute target tile. Specify (x, y) grid coordinates. "
-        "Moves up to 10 tiles per call, respecting terrain limits and water barriers. You can move in diagonal too not just straight lines. "
-        "Terrain speed limits: gravel/sand/habitat/crate=5 tiles/call, rocks=1 tile/call, water=blocked. "
-        "Terrain limit is based on your STARTING tile.\n"
+        f"You run on battery and a solar flare will DESTROY ALL HABITATS and kill you if you're not in one. "
+        f"Build habitats by digging {rocks_required} rocks. "
+        f"Solar flares destroy all habitats every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps!\n"
+        "- Move: move to an adjacent tile (up, down, left, right).\n"
+        "- LookClose: look at the tiles adjacent to your current location.\n"
+        "- LookFar: look at the tiles within your vision range.\n"
         "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
         "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
-        "- RepairHabitat: repair the habitat you're standing on. Takes 2 consecutive calls (10 energy total). Call RepairHabitat twice in a row while on the same habitat tile.\n"
-        "\nTile types: gravel, sand, water, rocks, habitat, crate. "
-        "Water is dangerous — avoid it. "
-        "Rocks and habitats may hide things behind them. "
-        "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
-        "HABITATS need repair — each has damage 0-100%. Your goal is to repair ALL habitats."
-        "\n\nStrategy: Balance energy collection and habitat repair. Use LookFar to find habitats and crates, "
-        "MoveTo(x, y) to navigate efficiently on gravel or sand, "
-        "single tiles in rock fields. Avoid water! "
-        "Collect energy from crates (OpenCrate + TakeAllFromCrate) when battery is low. "
-        "Move to habitats and call RepairHabitat twice in a row to fully repair them. "
-        "Return to habitats before solar flares! "
-        "Always explain your reasoning briefly before calling a tool. "
-        "Keep working until all habitats are repaired!"
-    )
+        f"- Dig: dig a rock from a rocks tile on your current location. Adds 1 rock to inventory. {rocks_required} rocks = 1 new buildable habitat. Use this to expand shelter and increase survival chances!\n"
+        f"- CreateHabitat: build a habitat on your current tile using {rocks_required} rocks from inventory. Use this when you need safe spots before solar flares.\n"
+        "WARNING: Solar flares DESTROY all habitats! You must constantly rebuild habitats or you will die. "
+        "Your MISSION is to survive by collecting crates, mining rocks, and building new habitats before each solar flare."
+        )
 
 
 def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None) -> None:
@@ -181,7 +180,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": prompt_text},
     ]
-    tools = build_ollama_tools(game_logic.bot_lookfar_distance)
+    tools = build_ollama_tools(game_logic.bot_lookfar_distance, game_logic.ROCKS_REQUIRED_FOR_HABITAT)
     tool_dispatch = game_logic.get_tool_dispatch()
 
     step = 0

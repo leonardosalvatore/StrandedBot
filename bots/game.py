@@ -111,28 +111,25 @@ def on_key_down(key, mod, unicode=""):
     if not ui_manager:
         return
 
-    if not unicode:
-        key_name = pygame.key.name(key)
-        if len(key_name) == 1:
-            unicode = key_name
-            if mod & pygame.KMOD_SHIFT:
-                unicode = unicode.upper()
+    safe_unicode = unicode if isinstance(unicode, str) and unicode.isprintable() else ""
 
     key_event = pygame.event.Event(
         pygame.KEYDOWN,
         {
             "key": key,
             "mod": mod,
-            "unicode": unicode,
+            "unicode": safe_unicode,
         },
     )
     ui_manager.process_events(key_event)
 
-    if unicode:
+    # Only synthesize TEXTINPUT for printable characters.
+    # Control chars like DEL/BS must be handled via KEYDOWN only.
+    if safe_unicode:
         text_event = pygame.event.Event(
             pygame.TEXTINPUT,
             {
-                "text": unicode,
+                "text": safe_unicode,
             },
         )
         ui_manager.process_events(text_event)
@@ -158,6 +155,9 @@ def on_text_input(text):
     """Forward text input to pygame_gui for text boxes."""
     ui_manager = get_ui_manager()
     if not ui_manager:
+        return
+
+    if not isinstance(text, str) or not text or not text.isprintable():
         return
 
     text_event = pygame.event.Event(

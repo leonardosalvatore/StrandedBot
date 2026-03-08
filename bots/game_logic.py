@@ -22,8 +22,9 @@ DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W
 
 BOT_RADIUS = 10
 BOT_SPEED = 220
-STEPS_SOLAR_FLARE_EVERY = 20
+STEPS_SOLAR_FLARE_EVERY = 50
 STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
+ROCKS_REQUIRED_FOR_HABITAT = 5
 
 # Solar flare animation state
 solar_flare_animation_active = False
@@ -93,10 +94,6 @@ tiles_lock = threading.Lock()
 # Fog of war setting (False when OLLAMA_PLAY=0 for full visibility)
 enable_fog_of_war = True
 
-# Repair state tracking
-bot_repair_progress: int = 0
-bot_repair_location: tuple[int, int] | None = None
-
 
 TOOL_STATE: dict[str, str] = {
     "MoveTo": "Moving",
@@ -104,7 +101,8 @@ TOOL_STATE: dict[str, str] = {
     "LookFar": "LookFar",
     "OpenCrate": "LookClose",
     "TakeAllFromCrate": "Charging",
-    "RepairHabitat": "LookClose",
+    "Dig": "LookClose",
+    "CreateHabitat": "LookClose",
 }
 
 
@@ -257,30 +255,30 @@ def _build_scenery_procedural() -> None:
     total += sand_total
     print(f"  Sand patches: {sand_patches} clusters done")
 
-    habitat_sites = [
-        (52, 57),
-        (55, 57),
-        (52, 60),
-        (55, 60),
-        (58, 63),
-    ]
-    for hx, hy in habitat_sites:
-        CreateTile(hx, hy, "habitat")
-        CreateTile(hx + 1, hy, "habitat")
-        CreateTile(hx, hy + 1, "habitat")
-        CreateTile(hx + 1, hy + 1, "habitat")
-        # Initialize damage for each habitat tile
-        habitat_damage[(hx, hy)] = {"damage": random.randint(0, 100), "repaired": False}
-        habitat_damage[(hx + 1, hy)] = {"damage": random.randint(0, 100), "repaired": False}
-        habitat_damage[(hx, hy + 1)] = {"damage": random.randint(0, 100), "repaired": False}
-        habitat_damage[(hx + 1, hy + 1)] = {"damage": random.randint(0, 100), "repaired": False}
-        # Set color based on damage status (broken habitats are dark green)
-        tile_matrix[hx][hy].color = TILE_COLORS["broken_habitat"]
-        tile_matrix[hx + 1][hy].color = TILE_COLORS["broken_habitat"]
-        tile_matrix[hx][hy + 1].color = TILE_COLORS["broken_habitat"]
-        tile_matrix[hx + 1][hy + 1].color = TILE_COLORS["broken_habitat"]
-        total += 4
-    print("  Habitats: done")
+    # habitat_sites = [
+    #     (52, 57),
+    #     (55, 57),
+    #     (52, 60),
+    #     (55, 60),
+    #     (58, 63),
+    # ]
+    # for hx, hy in habitat_sites:
+    #     CreateTile(hx, hy, "habitat")
+    #     CreateTile(hx + 1, hy, "habitat")
+    #     CreateTile(hx, hy + 1, "habitat")
+    #     CreateTile(hx + 1, hy + 1, "habitat")
+    #     # Initialize damage for each habitat tile
+    #     habitat_damage[(hx, hy)] = {"damage": random.randint(0, 100), "repaired": False}
+    #     habitat_damage[(hx + 1, hy)] = {"damage": random.randint(0, 100), "repaired": False}
+    #     habitat_damage[(hx, hy + 1)] = {"damage": random.randint(0, 100), "repaired": False}
+    #     habitat_damage[(hx + 1, hy + 1)] = {"damage": random.randint(0, 100), "repaired": False}
+    #     # Set color based on damage status (broken habitats are dark green)
+    #     tile_matrix[hx][hy].color = TILE_COLORS["broken_habitat"]
+    #     tile_matrix[hx + 1][hy].color = TILE_COLORS["broken_habitat"]
+    #     tile_matrix[hx][hy + 1].color = TILE_COLORS["broken_habitat"]
+    #     tile_matrix[hx + 1][hy + 1].color = TILE_COLORS["broken_habitat"]
+    #     total += 4
+    # print("  Habitats: done")
 
     crates_placed = 0
     attempts = 0
@@ -366,12 +364,26 @@ def _advance_solar_flare_step() -> bool:
     if STEPS_TO_SOLAR_FLARE > 0:
         return True
 
+    # Solar flare occurs - destroy all habitats
+    print("\n  [SolarFlare] === SOLAR FLARE EVENT ===")
+    habitats_destroyed = 0
+    for (hx, hy) in list(habitat_damage.keys()):
+        if tile_matrix[hx][hy].type == "habitat":
+            CreateTile(hx, hy, "gravel")
+            del habitat_damage[(hx, hy)]
+            habitats_destroyed += 1
+    print(f"  [SolarFlare] Destroyed {habitats_destroyed} habitat(s)!")
+
     gx, gy = _bot_grid_pos()
     tile_type = tile_matrix[gx][gy].type
     if tile_type == "habitat":
-        STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
-        print("  [SolarFlare] Safe in a habitat. Timer reset.")
-        return True
+        # Bot was in habitat but it got destroyed
+        bot_energy = 0
+        bot_state = "Destroyed"
+        solar_flare_animation_active = True
+        solar_flare_animation_start_time = time.time()
+        print("  [SolarFlare] Bot destroyed - habitat was destroyed by solar flare!")
+        return False
 
     bot_energy = 0
     bot_state = "Destroyed"
@@ -723,81 +735,102 @@ def TakeAllFromCrate() -> dict[str, Any]:
     }
 
 
-def RepairHabitat() -> dict[str, Any]:
-    global bot_energy, bot_repair_progress, bot_repair_location
+def Dig() -> dict[str, Any]:
+    global bot_inventory
     if not _advance_solar_flare_step():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     
-    _consume_energy(5)  # Each repair step costs 5 energy (2 steps = 10 total)
+    _consume_energy(1)
     gx, gy = _bot_grid_pos()
-    habitat = habitat_damage.get((gx, gy))
     
-    if habitat is None:
-        msg = f"No habitat at tile ({gx}, {gy})."
-        print(f"  [RepairHabitat] {msg}")
-        bot_repair_progress = 0
-        bot_repair_location = None
+    if tile_matrix[gx][gy].type != "rocks":
+        msg = f"No rocks at tile ({gx}, {gy}). Current tile: {tile_matrix[gx][gy].type}."
+        print(f"  [Dig] {msg}")
         return {"ok": False, "error": msg, "energy": bot_energy}
     
-    if habitat["repaired"]:
-        msg = f"Habitat at ({gx}, {gy}) is already fully repaired (was {habitat['damage']}% damaged)."
-        print(f"  [RepairHabitat] {msg}")
-        bot_repair_progress = 0
-        bot_repair_location = None
-        return {
-            "ok": True,
-            "already_repaired": True,
-            "damage": 0,
-            "tile_x": gx,
-            "tile_y": gy,
-            "energy": bot_energy,
-            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
-        }
+    # Replace rocks with gravel
+    CreateTile(gx, gy, "gravel")
     
-    # Check if continuing repair at same location
-    if bot_repair_location == (gx, gy):
-        bot_repair_progress += 1
-    else:
-        # Starting new repair
-        bot_repair_location = (gx, gy)
-        bot_repair_progress = 1
+    # Add rock to inventory
+    bot_inventory.append({"type": "rock"})
+    rock_count = sum(1 for item in bot_inventory if item["type"] == "rock")
+    habitats_possible = rock_count // ROCKS_REQUIRED_FOR_HABITAT
     
-    print(f"  [RepairHabitat] Repairing habitat at ({gx}, {gy}) - Step {bot_repair_progress}/2 (damage: {habitat['damage']}%)")
-    
-    if bot_repair_progress >= 2:
-        # Repair complete!
-        habitat["repaired"] = True
-        original_damage = habitat["damage"]
-        habitat["damage"] = 0
-        bot_repair_progress = 0
-        bot_repair_location = None
-        # Update habitat color to bright green when repaired
-        tile_matrix[gx][gy].color = TILE_COLORS["habitat"]
-        print(f"  [RepairHabitat] ✓ Habitat fully repaired! Was {original_damage}% damaged, now 0%.")
-        time.sleep(1.0)
+    print(f"  [Dig] Dug a rock at ({gx}, {gy})! Rocks in inventory: {rock_count} (can build {habitats_possible} habitat(s))")
+    return {
+        "ok": True,
+        "rock_obtained": True,
+        "rocks_in_inventory": rock_count,
+        "habitats_buildable": habitats_possible,
+        "tile_x": gx,
+        "tile_y": gy,
+        "energy": bot_energy,
+        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+    }
+
+
+def CreateHabitat() -> dict[str, Any]:
+    global bot_inventory
+    if not _advance_solar_flare_step():
+        return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
+
+    _consume_energy(1)
+    gx, gy = _bot_grid_pos()
+    current_tile = tile_matrix[gx][gy].type
+
+    if current_tile == "habitat":
+        msg = f"Tile ({gx}, {gy}) is already a habitat."
+        print(f"  [CreateHabitat] {msg}")
+        return {"ok": False, "error": msg, "energy": bot_energy}
+
+    if current_tile in {"water", "crate"}:
+        msg = f"Cannot build habitat on {current_tile} tile at ({gx}, {gy})."
+        print(f"  [CreateHabitat] {msg}")
+        return {"ok": False, "error": msg, "energy": bot_energy}
+
+    rock_count = sum(1 for item in bot_inventory if item.get("type") == "rock")
+    if rock_count < ROCKS_REQUIRED_FOR_HABITAT:
+        msg = (
+            f"Need {ROCKS_REQUIRED_FOR_HABITAT} rocks to build a habitat. "
+            f"Current rocks: {rock_count}."
+        )
+        print(f"  [CreateHabitat] {msg}")
         return {
-            "ok": True,
-            "repair_complete": True,
-            "original_damage": original_damage,
-            "damage": 0,
-            "tile_x": gx,
-            "tile_y": gy,
+            "ok": False,
+            "error": msg,
+            "rocks_in_inventory": rock_count,
+            "rocks_needed": ROCKS_REQUIRED_FOR_HABITAT - rock_count,
             "energy": bot_energy,
-            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
         }
-    else:
-        # Partial progress
-        return {
-            "ok": True,
-            "repair_complete": False,
-            "progress": bot_repair_progress,
-            "steps_remaining": 2 - bot_repair_progress,
-            "damage": habitat["damage"],
-            "tile_x": gx,
-            "tile_y": gy,
-            "energy": bot_energy,
-            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
-        }
+
+    rocks_to_consume = ROCKS_REQUIRED_FOR_HABITAT
+    new_inventory: list[dict[str, Any]] = []
+    for item in bot_inventory:
+        if rocks_to_consume > 0 and item.get("type") == "rock":
+            rocks_to_consume -= 1
+            continue
+        new_inventory.append(item)
+    bot_inventory = new_inventory
+
+    CreateTile(gx, gy, "habitat")
+    habitat_damage[(gx, gy)] = {"damage": 0, "repaired": True}
+    tile_matrix[gx][gy].color = TILE_COLORS["habitat"]
+
+    rocks_left = sum(1 for item in bot_inventory if item.get("type") == "rock")
+    print(
+        f"  [CreateHabitat] Built habitat at ({gx}, {gy}) using {ROCKS_REQUIRED_FOR_HABITAT} rocks. "
+        f"Rocks left: {rocks_left}"
+    )
+    return {
+        "ok": True,
+        "habitat_created": True,
+        "tile_x": gx,
+        "tile_y": gy,
+        "rocks_consumed": ROCKS_REQUIRED_FOR_HABITAT,
+        "rocks_in_inventory": rocks_left,
+        "energy": bot_energy,
+        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+    }
 
 
 def get_tool_dispatch() -> dict[str, Any]:
@@ -807,19 +840,17 @@ def get_tool_dispatch() -> dict[str, Any]:
         "LookFar": LookFar,
         "OpenCrate": OpenCrate,
         "TakeAllFromCrate": TakeAllFromCrate,
-        "RepairHabitat": RepairHabitat,
+        "Dig": Dig,
+        "CreateHabitat": CreateHabitat,
     }
 
 
 def print_step_status() -> None:
     gx, gy = _bot_grid_pos()
-    habitats_repaired = sum(1 for habitat in habitat_damage.values() if habitat["repaired"])
     habitats_total = len(habitat_damage)
     print("\n  === STATUS ===")
     print(f"  Energy: {bot_energy}  |  Position: tile ({gx}, {gy})  |  Solar flare in: {STEPS_TO_SOLAR_FLARE} steps")
-    print(f"  Habitats repaired: {habitats_repaired}/{habitats_total}")
-    if bot_repair_progress > 0 and bot_repair_location:
-        print(f"  Repair in progress: {bot_repair_progress}/2 at {bot_repair_location}")
+    print(f"  Habitats existing: {habitats_total}")
     print(f"  Inventory: {bot_inventory if bot_inventory else '(empty)'}")
     print("  Surroundings:")
     with tiles_lock:

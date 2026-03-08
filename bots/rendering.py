@@ -55,11 +55,15 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     _ui_manager.preload_fonts([
         {'name': 'noto_sans', 'point_size': 12, 'style': 'regular', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 12, 'style': 'italic', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 12, 'style': 'bold', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 14, 'style': 'regular', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 14, 'style': 'italic', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 14, 'style': 'bold', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 16, 'style': 'regular', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 16, 'style': 'italic', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 16, 'style': 'bold', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 18, 'style': 'regular', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 18, 'style': 'bold', 'antialiased': '1'},
     ])
     
     # Create start menu FIRST so it's on top
@@ -74,10 +78,11 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         visible=False,  # Hidden until game starts
     )
     _stats_text = UITextBox(
-        html_text="<font size=4>Initializing...</font>",
-        relative_rect=pygame.Rect((0, 0), (290, 160)),
+        html_text="<font size=5>Initializing...</font>",
+        relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_stats_window,
+        anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
     
     # 2. Message Log Window (left side) - minimized by default
@@ -89,10 +94,11 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         visible=False,  # Hidden until game starts
     )
     _log_text = UITextBox(
-        html_text="<font size=3>Message log started...</font>",
-        relative_rect=pygame.Rect((0, 0), (380, 260)),
+        html_text="<font size=4>Message log started...</font>",
+        relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_log_window,
+        anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
     
     # 3. Bot Speech Window (bottom) - minimized by default
@@ -104,10 +110,11 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         visible=False,  # Hidden until game starts
     )
     _speech_text = UITextBox(
-        html_text="<font size=4>Waiting for bot to speak...</font>",
-        relative_rect=pygame.Rect((0, 0), (580, 160)),
+        html_text="<font size=5>Waiting for bot to speak...</font>",
+        relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_speech_window,
+        anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
     
     # 4. AI Prompt Window (bottom-right) - minimized by default
@@ -119,10 +126,11 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         visible=False,  # Hidden until game starts
     )
     _prompt_text = UITextBox(
-        html_text="<font size=3><i>Prompt not selected yet.</i></font>",
-        relative_rect=pygame.Rect((0, 0), (390, 160)),
+        html_text="<font size=4><i>Prompt not selected yet.</i></font>",
+        relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_input_window,
+        anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
     
     message_log.start_capture()
@@ -291,21 +299,28 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     
     # Update Bot Stats
     if _stats_text:
-        habitats_repaired = sum(1 for habitat in game_logic.habitat_damage.values() if habitat["repaired"])
         habitats_total = len(game_logic.habitat_damage)
-        repair_status = ""
-        if game_logic.bot_repair_progress > 0 and game_logic.bot_repair_location:
-            repair_status = f"<b>Repairing:</b> {game_logic.bot_repair_progress}/2<br>"
+
+        inventory_items = getattr(game_logic, "bot_inventory", []) or []
+        if inventory_items:
+            counts: dict[str, int] = {}
+            for item in inventory_items:
+                item_type = str(item.get("type", "unknown")) if isinstance(item, dict) else "unknown"
+                counts[item_type] = counts.get(item_type, 0) + 1
+            inventory_text = ", ".join(f"{item_type} x{count}" for item_type, count in sorted(counts.items()))
+        else:
+            inventory_text = "(empty)"
+        inventory_text = html.escape(inventory_text)
         
         stats_html = (
-            "<font size=4>"
+            "<font size=5>"
             f"<b>Energy:</b> {game_logic.bot_energy}<br>"
             f"<b>Position:</b> ({gx}, {gy})<br>"
             f"<b>Target:</b> ({tgx}, {tgy})<br>"
             f"<b>State:</b> {game_logic.bot_state}<br>"
             f"<b>Solar Flare in:</b> {game_logic.STEPS_TO_SOLAR_FLARE}<br>"
-            f"<b>Habitats:</b> {habitats_repaired}/{habitats_total} repaired<br>"
-            f"{repair_status}"
+            f"<b>Habitats:</b> {habitats_total}<br>"
+            f"<b>Inventory:</b> {inventory_text}<br>"
             f"<b>Model:</b> {ollama_model}"
             "</font>"
         )
@@ -318,7 +333,7 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     # Update Message Log (last 50 messages)
     if _log_text:
         messages = message_log.get_messages(50)
-        log_html = "<font size=3>" + "<br>".join(messages[-50:]) + "</font>"
+        log_html = "<font size=4>" + "<br>".join(messages[-50:]) + "</font>"
         global _last_log_html
         if log_html != _last_log_html:
             should_follow = False
@@ -335,7 +350,7 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     
     # Update Bot Speech
     if _speech_text and game_logic.bot_last_speech:
-        speech_html = f'<font size=4>🤖 {game_logic.bot_last_speech}</font>'
+        speech_html = f'<font size=5>🤖 {game_logic.bot_last_speech}</font>'
         global _last_speech_html
         if speech_html != _last_speech_html:
             _speech_text.html_text = speech_html
@@ -345,7 +360,7 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     # Update AI Prompt panel
     if _prompt_text:
         prompt_safe = html.escape(ai_prompt or "Prompt not selected yet.")
-        prompt_html = f"<font size=3>{prompt_safe.replace(chr(10), '<br>')}</font>"
+        prompt_html = f"<font size=4>{prompt_safe.replace(chr(10), '<br>')}</font>"
         global _last_prompt_html
         if prompt_html != _last_prompt_html:
             _prompt_text.html_text = prompt_html
