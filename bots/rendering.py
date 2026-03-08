@@ -1,10 +1,12 @@
 import importlib.resources
 import time
+import html
 from typing import Any
 
 import pygame
 import pygame_gui
-from pygame_gui.elements import UIWindow, UITextBox
+from pygame_gui import UI_BUTTON_PRESSED, UI_BUTTON_START_PRESS, UI_BUTTON_ON_HOVERED
+from pygame_gui.elements import UIButton, UILabel, UIWindow, UITextBox, UITextEntryBox
 
 
 _SPRITE_SHEET: pygame.Surface | None = None
@@ -27,33 +29,49 @@ _input_window: UIWindow | None = None
 _stats_text: UITextBox | None = None
 _log_text: UITextBox | None = None
 _speech_text: UITextBox | None = None
+_prompt_text: UITextBox | None = None
 _last_log_html: str | None = None
 _last_speech_html: str | None = None
 _last_stats_html: str | None = None
+_last_prompt_html: str | None = None
+
+_start_window: UIWindow | None = None
+_start_default_button: UIButton | None = None
+_start_custom_button: UIButton | None = None
+_custom_prompt_window: UIWindow | None = None
+_custom_prompt_entry: UITextEntryBox | None = None
+_custom_prompt_confirm_button: UIButton | None = None
+_custom_prompt_cancel_button: UIButton | None = None
 
 
 def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.UIManager:
     """Initialize pygame_gui manager and create the 4 UI windows."""
     global _ui_manager, _stats_window, _log_window, _speech_window, _input_window
-    global _stats_text, _log_text, _speech_text
+    global _stats_text, _log_text, _speech_text, _prompt_text
     
     _ui_manager = pygame_gui.UIManager(screen_size)
     
     # Preload fonts to avoid warnings
     _ui_manager.preload_fonts([
         {'name': 'noto_sans', 'point_size': 12, 'style': 'regular', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 12, 'style': 'italic', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 14, 'style': 'regular', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 14, 'style': 'italic', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 14, 'style': 'bold', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 16, 'style': 'regular', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 18, 'style': 'regular', 'antialiased': '1'},
     ])
     
-    # 1. Bot Stats Window (top-right)
+    # Create start menu FIRST so it's on top
+    _create_start_menu(screen_size)
+    
+    # 1. Bot Stats Window (top-right) - minimized by default
     _stats_window = UIWindow(
         rect=pygame.Rect((screen_size[0] - 320, 10), (310, 200)),
         manager=_ui_manager,
         window_display_title="Bot Stats",
         resizable=True,
+        visible=False,  # Hidden until game starts
     )
     _stats_text = UITextBox(
         html_text="<font size=4>Initializing...</font>",
@@ -62,12 +80,13 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         container=_stats_window,
     )
     
-    # 2. Message Log Window (left side)
+    # 2. Message Log Window (left side) - minimized by default
     _log_window = UIWindow(
         rect=pygame.Rect((10, 10), (400, 300)),
         manager=_ui_manager,
         window_display_title="Message Log",
         resizable=True,
+        visible=False,  # Hidden until game starts
     )
     _log_text = UITextBox(
         html_text="<font size=3>Message log started...</font>",
@@ -76,12 +95,13 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         container=_log_window,
     )
     
-    # 3. Bot Speech Window (bottom)
+    # 3. Bot Speech Window (bottom) - minimized by default
     _speech_window = UIWindow(
         rect=pygame.Rect((10, screen_size[1] - 210), (600, 200)),
         manager=_ui_manager,
         window_display_title="Bot Speech",
         resizable=True,
+        visible=False,  # Hidden until game starts
     )
     _speech_text = UITextBox(
         html_text="<font size=4>Waiting for bot to speak...</font>",
@@ -90,15 +110,16 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
         container=_speech_window,
     )
     
-    # 4. User Input Window (bottom-right, non-functional for now)
+    # 4. AI Prompt Window (bottom-right) - minimized by default
     _input_window = UIWindow(
         rect=pygame.Rect((screen_size[0] - 420, screen_size[1] - 210), (410, 200)),
         manager=_ui_manager,
-        window_display_title="User Input (Coming Soon)",
+        window_display_title="AI Prompt",
         resizable=True,
+        visible=False,  # Hidden until game starts
     )
-    UITextBox(
-        html_text="<font size=4><i>User input functionality coming soon...</i></font>",
+    _prompt_text = UITextBox(
+        html_text="<font size=3><i>Prompt not selected yet.</i></font>",
         relative_rect=pygame.Rect((0, 0), (390, 160)),
         manager=_ui_manager,
         container=_input_window,
@@ -108,7 +129,158 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     return _ui_manager
 
 
-def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any) -> None:
+def _create_start_menu(screen_size: tuple[int, int]) -> None:
+    global _start_window, _start_default_button, _start_custom_button
+    if _ui_manager is None:
+        print("[DEBUG] Cannot create start menu - UI manager is None")
+        return
+
+    win_w, win_h = 430, 180
+    x = (screen_size[0] - win_w) // 2
+    y = (screen_size[1] - win_h) // 2
+    _start_window = UIWindow(
+        rect=pygame.Rect((x, y), (win_w, win_h)),
+        manager=_ui_manager,
+        window_display_title="Start Game",
+        resizable=False,
+        draggable=False,  # Make it non-draggable so buttons work better
+    )
+    UILabel(
+        relative_rect=pygame.Rect((15, 10), (400, 30)),
+        text="Choose how to initialize the bot prompt:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_default_button = UIButton(
+        relative_rect=pygame.Rect((20, 50), (390, 40)),
+        text="Bot AI with default prompt",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_custom_button = UIButton(
+        relative_rect=pygame.Rect((20, 100), (390, 40)),
+        text="Bot with Custom prompt",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    print(f"[DEBUG] Start menu created! Window at ({x},{y}), buttons: default={_start_default_button}, custom={_start_custom_button}")
+    print(f"[DEBUG] Button rects: default={_start_default_button.relative_rect}, custom={_start_custom_button.relative_rect}")
+
+
+def _open_custom_prompt_dialog() -> None:
+    global _custom_prompt_window, _custom_prompt_entry
+    global _custom_prompt_confirm_button, _custom_prompt_cancel_button
+    if _ui_manager is None or _custom_prompt_window is not None:
+        return
+
+    _custom_prompt_window = UIWindow(
+        rect=pygame.Rect((140, 120), (920, 520)),
+        manager=_ui_manager,
+        window_display_title="Custom Prompt",
+        resizable=False,
+    )
+    UILabel(
+        relative_rect=pygame.Rect((15, 10), (880, 25)),
+        text="Enter the prompt text for the AI:",
+        manager=_ui_manager,
+        container=_custom_prompt_window,
+    )
+    _custom_prompt_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((15, 40), (880, 370)),
+        manager=_ui_manager,
+        container=_custom_prompt_window,
+    )
+    _custom_prompt_confirm_button = UIButton(
+        relative_rect=pygame.Rect((15, 430), (430, 50)),
+        text="Start with custom prompt",
+        manager=_ui_manager,
+        container=_custom_prompt_window,
+    )
+    _custom_prompt_cancel_button = UIButton(
+        relative_rect=pygame.Rect((465, 430), (430, 50)),
+        text="Cancel",
+        manager=_ui_manager,
+        container=_custom_prompt_window,
+    )
+
+
+def open_custom_prompt_dialog(default_text: str) -> None:
+    _open_custom_prompt_dialog()
+    if _custom_prompt_entry is not None:
+        _custom_prompt_entry.set_text(default_text)
+    pygame.key.start_text_input()
+
+
+def _close_custom_prompt_dialog() -> None:
+    global _custom_prompt_window, _custom_prompt_entry
+    global _custom_prompt_confirm_button, _custom_prompt_cancel_button
+    if _custom_prompt_window is not None:
+        _custom_prompt_window.kill()
+    _custom_prompt_window = None
+    _custom_prompt_entry = None
+    _custom_prompt_confirm_button = None
+    _custom_prompt_cancel_button = None
+    pygame.key.stop_text_input()
+
+
+def _close_start_menu() -> None:
+    global _start_window, _start_default_button, _start_custom_button
+    if _start_window is not None:
+        _start_window.kill()
+    _start_window = None
+    _start_default_button = None
+    _start_custom_button = None
+    _close_custom_prompt_dialog()
+
+
+def show_game_windows() -> None:
+    """Show the game UI windows after game starts."""
+    global _stats_window, _log_window, _speech_window, _input_window
+    if _stats_window:
+        _stats_window.show()
+    if _log_window:
+        _log_window.show()
+    if _speech_window:
+        _speech_window.show()
+    if _input_window:
+        _input_window.show()
+    print("[DEBUG] Game windows shown")
+
+
+def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
+    # Use modern pygame_gui event.type instead of event.user_type
+    if event.type == UI_BUTTON_PRESSED:
+        print(f"[DEBUG] BUTTON CLICKED! ui_element={getattr(event, 'ui_element', None)}")
+        print(f"[DEBUG] Comparing to: default={_start_default_button}, custom={_start_custom_button}")
+
+        if _start_default_button and event.ui_element == _start_default_button:
+            print("[DEBUG] Default button clicked!")
+            _close_start_menu()
+            return {"action": "start_default"}
+
+        if _start_custom_button and event.ui_element == _start_custom_button:
+            print("[DEBUG] Custom button clicked!")
+            return {"action": "open_custom"}
+
+        if _custom_prompt_cancel_button and event.ui_element == _custom_prompt_cancel_button:
+            print("[DEBUG] Cancel button clicked!")
+            _close_custom_prompt_dialog()
+            return {"action": "cancel_custom"}
+
+        if _custom_prompt_confirm_button and event.ui_element == _custom_prompt_confirm_button:
+            print("[DEBUG] Confirm button clicked!")
+            prompt_text = ""
+            if _custom_prompt_entry is not None:
+                prompt_text = _custom_prompt_entry.get_text().strip()
+            if not prompt_text:
+                return {"action": "custom_prompt_empty"}
+            _close_start_menu()
+            return {"action": "start_custom", "prompt": prompt_text}
+
+    return None
+
+
+def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_prompt: str) -> None:
     """Update the content of all UI panels."""
     if not _ui_manager:
         return
@@ -170,8 +342,25 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any) -> No
             _speech_text.rebuild()
             _last_speech_html = speech_html
 
+    # Update AI Prompt panel
+    if _prompt_text:
+        prompt_safe = html.escape(ai_prompt or "Prompt not selected yet.")
+        prompt_html = f"<font size=3>{prompt_safe.replace(chr(10), '<br>')}</font>"
+        global _last_prompt_html
+        if prompt_html != _last_prompt_html:
+            _prompt_text.html_text = prompt_html
+            _prompt_text.rebuild()
+            _last_prompt_html = prompt_html
 
-def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str, message_log: Any = None) -> None:
+
+def draw_game(
+    screen: Any,
+    Rect: Any,
+    game_logic: Any,
+    ollama_model: str,
+    ai_prompt: str,
+    message_log: Any = None,
+) -> None:
     """Draw the game map and bot sprite (UI windows are drawn separately by pygame_gui)."""
     global _SPRITE_SHEET
     
@@ -256,7 +445,7 @@ def draw_game(screen: Any, Rect: Any, game_logic: Any, ollama_model: str, messag
     
     # Update UI panels with latest data
     if message_log:
-        update_ui_panels(game_logic, ollama_model, message_log)
+        update_ui_panels(game_logic, ollama_model, message_log, ai_prompt)
 
 
 def _draw_solar_flare_flash(screen: Any, game_logic: Any) -> None:

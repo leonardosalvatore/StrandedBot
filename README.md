@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**bots** is a Mars survival game built with Pygame Zero. An autonomous AI bot explores procedurally-generated Martian terrain, collecting energy from crates and racing against deadly solar flares. The bot must repair damaged habitat modules before solar flares destroy it. An Ollama LLM controls the bot using tool-calling, making strategic decisions about exploration, resource management, and survival.
+**bots** is a survival game built with Pygame Zero. An autonomous AI bot explores procedurally-generated Martian terrain, collecting energy from crates and racing against deadly solar flares. The bot must repair damaged habitat modules before solar flares destroy it. An Ollama LLM controls the bot using tool-calling, making strategic decisions about exploration, resource management, and survival.
 
 ## Commands
 
@@ -62,7 +62,7 @@ poetry run pytest <test_name>  # or poetry run python -m pytest ...
   - Thread-safe deque buffer (max 1000 lines)
 
 - **`bots/ollama_agent.py`** - Ollama integration (~280 lines):
-  - Mission prompt: "Repair all damaged habitats on Mars!"
+  - Mission prompt: "Repair all damaged habitats!"
   - Tool schema definitions for 6 bot actions
   - Tool-calling loop with step-based execution
   - Model lifecycle helpers

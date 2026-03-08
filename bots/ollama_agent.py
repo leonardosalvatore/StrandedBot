@@ -10,6 +10,7 @@ import ollama
 
 def get_ollama_settings() -> tuple[str, bool]:
     model = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+    #model = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b")
     enabled = os.getenv("OLLAMA_PLAY", "0") == "1"
     return model, enabled
 
@@ -134,14 +135,14 @@ def build_base_prompt(game_logic: Any) -> str:
     habitats_total = len(game_logic.habitat_damage)
     habitats_repaired = sum(1 for habitat in game_logic.habitat_damage.values() if habitat["repaired"])
     return (
-        "You are a robot explorer on Mars in a 2D tile-based survival game. "
+        "You are a robot explorer in a 2D tile-based survival game. "
         f"The map is {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT} tiles. "
         "All coordinates are TILE coordinates (x,y in grid), not pixel coordinates. "
-        f"You run on battery. Your starting energy is {game_logic.bot_start_energy}. "
+        f"You run on battery and a solar flare will kill you. Your starting energy is {game_logic.bot_start_energy}. "
         "Every action (MoveTo, LookClose, LookFar, OpenCrate, TakeAllFromCrate, RepairHabitat, Thinking) costs energy. Moving costs 1 energy per tile. RepairHabitat costs 5 energy per step. "
         "If your energy reaches 0 you shut down — game over! "
         f"Every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps there's a solar flare, you need to be in a habitat or you will be destroyed."
-        f"\n\n🎯 MISSION: Repair all damaged habitats on Mars! Progress: {habitats_repaired}/{habitats_total} habitats repaired."
+        f"\n\n🎯 MISSION: Survive and repair all damaged habitats! Progress: {habitats_repaired}/{habitats_total} habitats repaired."
         "\n\nAvailable tools:\n"
         "- LookClose: look around (3x3 tile grid). Shows habitat damage levels. Use this to see immediate surroundings.\n"
         f"- LookFar: wide scan (radius {game_logic.bot_lookfar_distance}). Returns notable features (rocks, habitat, crate) \n"
@@ -171,13 +172,14 @@ def build_base_prompt(game_logic: Any) -> str:
     )
 
 
-def run_ollama_play_loop(game_logic: Any, model: str) -> None:
+def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None) -> None:
     print(f"\n{'='*60}")
     print(f"OLLAMA PLAY MODE — model: {model}")
     print(f"{'='*60}\n")
 
+    prompt_text = initial_prompt.strip() if isinstance(initial_prompt, str) and initial_prompt.strip() else build_base_prompt(game_logic)
     messages: list[dict[str, Any]] = [
-        {"role": "user", "content": build_base_prompt(game_logic)},
+        {"role": "user", "content": prompt_text},
     ]
     tools = build_ollama_tools(game_logic.bot_lookfar_distance)
     tool_dispatch = game_logic.get_tool_dispatch()
@@ -283,8 +285,12 @@ def run_ollama_play_loop(game_logic: Any, model: str) -> None:
         time.sleep(0.5)
 
 
-def start_ollama_play(game_logic: Any, model: str) -> threading.Thread:
-    worker = threading.Thread(target=run_ollama_play_loop, args=(game_logic, model), daemon=True)
+def start_ollama_play(game_logic: Any, model: str, initial_prompt: str | None = None) -> threading.Thread:
+    worker = threading.Thread(
+        target=run_ollama_play_loop,
+        args=(game_logic, model, initial_prompt),
+        daemon=True,
+    )
     worker.start()
     return worker
 
