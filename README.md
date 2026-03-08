@@ -4,10 +4,7 @@
 
 ## Demo Video
 
-<video controls width="960">
-  <source src="bots/resources/video.mp4" type="video/mp4" />
-  Your browser does not support the video tag.
-</video>
+[![Demo video preview](bots/resources/video.gif)](bots/resources/video.mp4)
 
 Direct file link: [bots/resources/video.mp4](bots/resources/video.mp4)
 
