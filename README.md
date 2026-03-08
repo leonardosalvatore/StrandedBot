@@ -2,6 +2,15 @@
 
 **bots** is a survival game built with Pygame Zero. An autonomous AI bot explores procedurally-generated Martian terrain, collecting energy from crates and racing against deadly solar flares. The bot must repair damaged habitat modules before solar flares destroy it. An Ollama LLM controls the bot using tool-calling, making strategic decisions about exploration, resource management, and survival.
 
+## Demo Video
+
+<video controls width="960">
+  <source src="bots/resources/video.mp4" type="video/mp4" />
+  Your browser does not support the video tag.
+</video>
+
+Direct file link: [bots/resources/video.mp4](bots/resources/video.mp4)
+
 ## Commands
 
 ### Build/Install
