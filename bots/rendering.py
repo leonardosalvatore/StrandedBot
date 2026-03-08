@@ -71,7 +71,7 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     
     # 1. Bot Stats Window (top-right) - minimized by default
     _stats_window = UIWindow(
-        rect=pygame.Rect((screen_size[0] - 320, 10), (310, 200)),
+        rect=pygame.Rect((screen_size[0] - 320, 10), (310, 400)),
         manager=_ui_manager,
         window_display_title="Bot Stats",
         resizable=True,
@@ -103,7 +103,7 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     
     # 3. Bot Speech Window (bottom) - minimized by default
     _speech_window = UIWindow(
-        rect=pygame.Rect((10, screen_size[1] - 210), (600, 200)),
+        rect=pygame.Rect((10, screen_size[1] - 210), (1200, 200)),
         manager=_ui_manager,
         window_display_title="Bot Speech",
         resizable=True,
@@ -312,8 +312,10 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
             inventory_text = "(empty)"
         inventory_text = html.escape(inventory_text)
         
+        step_count = getattr(game_logic, "bot_step_count", 0)
         stats_html = (
             "<font size=5>"
+            f"<b>Step:</b> {step_count}<br>"
             f"<b>Energy:</b> {game_logic.bot_energy}<br>"
             f"<b>Position:</b> ({gx}, {gy})<br>"
             f"<b>Target:</b> ({tgx}, {tgy})<br>"

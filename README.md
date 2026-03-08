@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 **bots** is a survival game built with Pygame Zero. An autonomous AI bot explores procedurally-generated Martian terrain, collecting energy from crates and racing against deadly solar flares. The bot must repair damaged habitat modules before solar flares destroy it. An Ollama LLM controls the bot using tool-calling, making strategic decisions about exploration, resource management, and survival.

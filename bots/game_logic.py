@@ -4,10 +4,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-MAP_WIDTH = 1000
-SIDEBAR_WIDTH = 200
+MAP_WIDTH = 1400
+SIDEBAR_WIDTH = 520
 WIDTH = MAP_WIDTH + SIDEBAR_WIDTH
-MAP_HEIGHT = 700
+MAP_HEIGHT = 830
 PANEL_HEIGHT = 250
 HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
@@ -29,6 +29,7 @@ ROCKS_REQUIRED_FOR_HABITAT = 5
 # Solar flare animation state
 solar_flare_animation_active = False
 solar_flare_animation_start_time = 0.0
+solar_flare_last_step = -1
 
 TILE_TYPES = {"gravel", "sand", "water", "rocks", "habitat", "crate"}
 TILE_COLORS = {
@@ -70,7 +71,7 @@ class Tile:
     fog: bool = field(default=True)
 
 
-bot_start_energy = 100
+bot_start_energy = 200
 bot_x = 400
 bot_y = 550
 bot_target_x: float = bot_x
@@ -80,6 +81,7 @@ bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"
 bot_last_speech: str = ""
 bot_lookfar_distance = 20
+bot_step_count: int = 0
 
 
 tiles: dict[tuple[int, int], str] = {}
@@ -289,7 +291,7 @@ def _build_scenery_procedural() -> None:
         if tiles.get((cx, cy)) == "gravel":
             CreateTile(cx, cy, "crate")
             crate_contents[(cx, cy)] = {
-                "energy": random.randint(0, 100),
+                "energy": random.randint(50, 150),
                 "opened": False,
             }
             crates_placed += 1
@@ -353,19 +355,27 @@ def _consume_energy(amount: int = 1) -> None:
     bot_energy = max(0, bot_energy - amount)
 
 
-def _advance_solar_flare_step() -> bool:
+def _advance_solar_flare_step(current_step: int | None = None) -> bool:
     """Advance the solar flare countdown and resolve effects.
 
     Returns True if the bot survives this step, False if destroyed.
     """
     global STEPS_TO_SOLAR_FLARE, bot_energy, bot_state
     global solar_flare_animation_active, solar_flare_animation_start_time
+    global solar_flare_last_step
+    step = current_step if current_step is not None else bot_step_count
+    if step > 0 and step == solar_flare_last_step:
+        return True
+    if step > 0:
+        solar_flare_last_step = step
     STEPS_TO_SOLAR_FLARE -= 1
     if STEPS_TO_SOLAR_FLARE > 0:
         return True
 
-    # Solar flare occurs - destroy all habitats
+    # Solar flare occurs - destroy all habitats and drain energy (unless protected)
     print("\n  [SolarFlare] === SOLAR FLARE EVENT ===")
+    bot_gx, bot_gy = _bot_grid_pos()
+    bot_in_habitat = tile_matrix[bot_gx][bot_gy].type == "habitat"
     habitats_destroyed = 0
     for (hx, hy) in list(habitat_damage.keys()):
         if tile_matrix[hx][hy].type == "habitat":
@@ -374,24 +384,28 @@ def _advance_solar_flare_step() -> bool:
             habitats_destroyed += 1
     print(f"  [SolarFlare] Destroyed {habitats_destroyed} habitat(s)!")
 
-    gx, gy = _bot_grid_pos()
-    tile_type = tile_matrix[gx][gy].type
-    if tile_type == "habitat":
-        # Bot was in habitat but it got destroyed
-        bot_energy = 0
-        bot_state = "Destroyed"
-        solar_flare_animation_active = True
-        solar_flare_animation_start_time = time.time()
-        print("  [SolarFlare] Bot destroyed - habitat was destroyed by solar flare!")
-        return False
-
-    bot_energy = 0
-    bot_state = "Destroyed"
+    # Drain 100 energy from bot unless sheltered in a habitat at flare time
+    if bot_in_habitat:
+        print("  [SolarFlare] Bot was sheltered in a habitat - no energy drain.")
+    else:
+        energy_before = bot_energy
+        bot_energy = max(0, bot_energy - 100)
+        print(f"  [SolarFlare] Drained 100 energy from bot ({energy_before} -> {bot_energy})")
+    
     # Trigger flash animation
     solar_flare_animation_active = True
     solar_flare_animation_start_time = time.time()
-    print("  [SolarFlare] Bot destroyed by solar flare (not in a habitat).")
-    return False
+    
+    # Reset countdown
+    STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
+    
+    # Bot survives (unless energy runs out)
+    if bot_energy <= 0:
+        bot_state = "Destroyed"
+        print("  [SolarFlare] Bot destroyed - out of energy!")
+        return False
+    
+    return True
 
 
 def _bot_grid_pos() -> tuple[int, int]:
@@ -538,6 +552,8 @@ def LookClose() -> dict[str, Any]:
         f"scanned {len(surrounding)} surrounding tiles"
     )
 
+    # LookClose action completed - sprite change is handled by TOOL_STATE
+
     return {
         "ok": True,
         "bot_tile_x": grid_x,
@@ -580,6 +596,9 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
 
 
 def LookFar() -> dict[str, Any]:
+    global lookfar_scanning_active, lookfar_scanning_start_time
+    global lookfar_scan_radius, lookfar_scan_center_x, lookfar_scan_center_y
+    
     if not _advance_solar_flare_step():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     _consume_energy(1)
@@ -652,6 +671,11 @@ def LookFar() -> dict[str, Any]:
     for f in summary:
         damage_info = f" [damage: {f['damage']}%]" if f.get("damage") is not None else ""
         print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']}{damage_info}")
+
+    # Hold the LookFar state for 1 second so user sees the sprite
+    start_time = time.time()
+    while time.time() - start_time < 1.0:
+        time.sleep(0.05)
 
     return {
         "ok": True,

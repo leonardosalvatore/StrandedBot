@@ -156,18 +156,18 @@ def build_base_prompt(game_logic: Any) -> str:
     return (
         "You are a robot explorer. Don't ask any questions it will cost you energy.\n"
         f"The map is {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT} tiles. "
-        f"You run on battery and a solar flare will DESTROY ALL HABITATS and kill you if you're not in one. "
+        f"You run on battery. Solar flares occur every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps and DESTROY ALL HABITATS while draining 100 energy unless you are in a habitat at flare time. "
         f"Build habitats by digging {rocks_required} rocks. "
-        f"Solar flares destroy all habitats every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps!\n"
+        f"- Dig: dig a rock from a rocks tile on your current location. Adds 1 rock to inventory. {rocks_required} rocks = 1 new buildable habitat.\n"
+        f"- CreateHabitat: build a habitat on your current tile using {rocks_required} rocks from inventory.\n"
+        "WARNING: Solar flares DESTROY all habitats and drain 100 energy if you are not sheltered! Keep your energy high by collecting crates. "
+        "Your MISSION is to survive by collecting crates for energy and managing resources wisely."
+        f"Here are the tools you can use to complete your MISSION.\n"
         "- Move: move to an adjacent tile (up, down, left, right).\n"
         "- LookClose: look at the tiles adjacent to your current location.\n"
         "- LookFar: look at the tiles within your vision range.\n"
         "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
         "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
-        f"- Dig: dig a rock from a rocks tile on your current location. Adds 1 rock to inventory. {rocks_required} rocks = 1 new buildable habitat. Use this to expand shelter and increase survival chances!\n"
-        f"- CreateHabitat: build a habitat on your current tile using {rocks_required} rocks from inventory. Use this when you need safe spots before solar flares.\n"
-        "WARNING: Solar flares DESTROY all habitats! You must constantly rebuild habitats or you will die. "
-        "Your MISSION is to survive by collecting crates, mining rocks, and building new habitats before each solar flare."
         )
 
 
@@ -186,6 +186,10 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
     step = 0
     while True:
         step += 1
+        game_logic.bot_step_count = step
+        if not game_logic._advance_solar_flare_step(step):
+            print("  [System] Bot destroyed by solar flare. Stopping play loop.")
+            return
 
         while True:
             if game_logic.bot_state not in ("Moving", "Charging"):
