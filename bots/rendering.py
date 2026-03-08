@@ -39,6 +39,15 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     
     _ui_manager = pygame_gui.UIManager(screen_size)
     
+    # Preload fonts to avoid warnings
+    _ui_manager.preload_fonts([
+        {'name': 'noto_sans', 'point_size': 12, 'style': 'regular', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 14, 'style': 'italic', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 14, 'style': 'bold', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 16, 'style': 'regular', 'antialiased': '1'},
+        {'name': 'noto_sans', 'point_size': 18, 'style': 'regular', 'antialiased': '1'},
+    ])
+    
     # 1. Bot Stats Window (top-right)
     _stats_window = UIWindow(
         rect=pygame.Rect((screen_size[0] - 320, 10), (310, 200)),
@@ -110,6 +119,12 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any) -> No
     
     # Update Bot Stats
     if _stats_text:
+        habitats_repaired = sum(1 for habitat in game_logic.habitat_damage.values() if habitat["repaired"])
+        habitats_total = len(game_logic.habitat_damage)
+        repair_status = ""
+        if game_logic.bot_repair_progress > 0 and game_logic.bot_repair_location:
+            repair_status = f"<b>Repairing:</b> {game_logic.bot_repair_progress}/2<br>"
+        
         stats_html = (
             "<font size=4>"
             f"<b>Energy:</b> {game_logic.bot_energy}<br>"
@@ -117,6 +132,8 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any) -> No
             f"<b>Target:</b> ({tgx}, {tgy})<br>"
             f"<b>State:</b> {game_logic.bot_state}<br>"
             f"<b>Solar Flare in:</b> {game_logic.STEPS_TO_SOLAR_FLARE}<br>"
+            f"<b>Habitats:</b> {habitats_repaired}/{habitats_total} repaired<br>"
+            f"{repair_status}"
             f"<b>Model:</b> {ollama_model}"
             "</font>"
         )

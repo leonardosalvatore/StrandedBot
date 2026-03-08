@@ -23,7 +23,7 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
                 "description": (
                     "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
                     "The bot will move up to 10 tiles per call, respecting terrain limits and water barriers. "
-                    "Terrain limits: gravel/sand/cave/crate=5 tiles, rocks=1 tile, water=blocked. "
+                    "Terrain limits: gravel/sand/habitat/crate=5 tiles, rocks=1 tile, water=blocked. "
                     "Costs 1 energy per tile of movement."
                 ),
                 "parameters": {
@@ -64,7 +64,7 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
                 "name": "LookFar",
                 "description": (
                     f"Wide-area scan: looks in a radius of {lookfar_distance} tiles around the bot and "
-                    "returns a list of notable features (rocks, cave, crate) with "
+                    "returns a list of notable features (rocks, habitat, crate) with "
                     "their absolute tile coordinates (x, y), type, and distance. "
                     "Rock fields block line-of-sight, so features hidden behind rocks won't be visible. "
                     "Great for planning where to go next. Costs 1 energy."
@@ -109,41 +109,65 @@ def build_ollama_tools(lookfar_distance: int) -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "RepairHabitat",
+                "description": (
+                    "Repair the habitat on the bot's current tile. "
+                    "The bot must be standing on a 'habitat' tile. "
+                    "Repairing takes 2 consecutive calls to RepairHabitat and costs 10 energy total (5 per step). "
+                    "Each habitat has a damage value (0-100%). Your mission is to repair all habitats. "
+                    "LookClose and LookFar show habitat damage levels."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+        },
     ]
 
 
 def build_base_prompt(game_logic: Any) -> str:
+    habitats_total = len(game_logic.habitat_damage)
+    habitats_repaired = sum(1 for habitat in game_logic.habitat_damage.values() if habitat["repaired"])
     return (
-        "You are a robot explorer in a 2D tile-based RPG world. "
+        "You are a robot explorer on Mars in a 2D tile-based survival game. "
         f"The map is {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT} tiles. "
         "All coordinates are TILE coordinates (x,y in grid), not pixel coordinates. "
         f"You run on battery. Your starting energy is {game_logic.bot_start_energy}. "
-        "Every action (MoveTo, LookClose, LookFar, OpenCrate, TakeAllFromCrate, Thinking) costs at least 1 energy. Moving costs 1 energy per tile. "
+        "Every action (MoveTo, LookClose, LookFar, OpenCrate, TakeAllFromCrate, RepairHabitat, Thinking) costs energy. Moving costs 1 energy per tile. RepairHabitat costs 5 energy per step. "
         "If your energy reaches 0 you shut down — game over! "
-        "Every {STEPS_SOLAR_FLARE_EVERY} steps there's a solar flare, you need to be in a house or you will be destroyed."
+        f"Every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps there's a solar flare, you need to be in a habitat or you will be destroyed."
+        f"\n\n🎯 MISSION: Repair all damaged habitats on Mars! Progress: {habitats_repaired}/{habitats_total} habitats repaired."
         "\n\nAvailable tools:\n"
-        "- LookClose: look around (3x3 tile grid). Use this to see immediate surroundings.\n"
-        f"- LookFar: wide scan (radius {game_logic.bot_lookfar_distance}). Returns notable features (rocks, cave, crate) \n"
-        "with coordinates and distance. Use this to plan your route!\n"
-        "Rocks and caves block line of sight, you cannot see crate behind them, you need to go around."
-        "Caves save you from the solar flare."
+        "- LookClose: look around (3x3 tile grid). Shows habitat damage levels. Use this to see immediate surroundings.\n"
+        f"- LookFar: wide scan (radius {game_logic.bot_lookfar_distance}). Returns notable features (rocks, habitat, crate) \n"
+        "with coordinates, distance, and habitat damage levels. Use this to plan your route!\n"
+        "Rocks and habitats block line of sight, you cannot see crate behind them, you need to go around."
+        "Habitats save you from the solar flare.\n"
         "- MoveTo(target_x, target_y): move toward absolute target tile. Specify (x, y) grid coordinates. "
         "Moves up to 10 tiles per call, respecting terrain limits and water barriers. You can move in diagonal too not just straight lines. "
-        "Terrain speed limits: gravel/sand/cave/crate=5 tiles/call, rocks=1 tile/call, water=blocked. "
+        "Terrain speed limits: gravel/sand/habitat/crate=5 tiles/call, rocks=1 tile/call, water=blocked. "
         "Terrain limit is based on your STARTING tile.\n"
         "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
         "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
-        "\nTile types: gravel, sand, water, rocks, cave, crate. "
+        "- RepairHabitat: repair the habitat you're standing on. Takes 2 consecutive calls (10 energy total). Call RepairHabitat twice in a row while on the same habitat tile.\n"
+        "\nTile types: gravel, sand, water, rocks, habitat, crate. "
         "Water is dangerous — avoid it. "
-        "Rocks and caves may hide things behind them. "
+        "Rocks and habitats may hide things behind them. "
         "RED CRATES contain energy cells (0-100 energy) — find and loot them to survive! "
-        "\n\nStrategy: use LookFar to find crates and notable features, "
-        "MoveTo(x, y) with moderate distances on gravel or sand, "
-        "single tiles in rock fields. Avoid water! LookClose when close, "
-        "then OpenCrate + TakeAllFromCrate to loot energy. "
-        "Explore efficiently to conserve battery. "
+        "HABITATS need repair — each has damage 0-100%. Your goal is to repair ALL habitats."
+        "\n\nStrategy: Balance energy collection and habitat repair. Use LookFar to find habitats and crates, "
+        "MoveTo(x, y) to navigate efficiently on gravel or sand, "
+        "single tiles in rock fields. Avoid water! "
+        "Collect energy from crates (OpenCrate + TakeAllFromCrate) when battery is low. "
+        "Move to habitats and call RepairHabitat twice in a row to fully repair them. "
+        "Return to habitats before solar flares! "
         "Always explain your reasoning briefly before calling a tool. "
-        "Keep exploring — don't stop!"
+        "Keep working until all habitats are repaired!"
     )
 
 

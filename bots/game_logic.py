@@ -29,13 +29,14 @@ STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
 solar_flare_animation_active = False
 solar_flare_animation_start_time = 0.0
 
-TILE_TYPES = {"gravel", "sand", "water", "rocks", "cave", "crate"}
+TILE_TYPES = {"gravel", "sand", "water", "rocks", "habitat", "crate"}
 TILE_COLORS = {
     "gravel": (140, 120, 100),
     "sand": (220, 200, 120),
-    "water": (70, 130, 220),
+    "water": (120, 210, 255),
     "rocks": (90, 80, 70),
-    "cave": (140, 110, 90),
+    "habitat": (180, 255, 100),
+    "broken_habitat": (40, 70, 40),
     "crate": (200, 50, 50),
 }
 
@@ -44,7 +45,7 @@ TILE_DESCRIPTIONS = {
     "sand": "Warm, loose sand.",
     "water": "Clear, shimmering water.",
     "rocks": "Jagged rocks and boulders.",
-    "cave": "A dark, sheltered cave.",
+    "habitat": "A sealed habitat module.",
     "crate": "A mysterious red crate. It might contain energy cells.",
 }
 
@@ -53,7 +54,7 @@ TILE_MAX_DISTANCE: dict[str, int] = {
     "sand": 5,
     "water": 0,
     "rocks": 1,
-    "cave": 5,
+    "habitat": 5,
     "crate": 5,
 }
 
@@ -82,11 +83,16 @@ bot_lookfar_distance = 20
 
 tiles: dict[tuple[int, int], str] = {}
 crate_contents: dict[tuple[int, int], dict[str, Any]] = {}
+habitat_damage: dict[tuple[int, int], dict[str, Any]] = {}
 tile_matrix: list[list[Tile]] = [
     [Tile(x=x, y=y, type="gravel") for y in range(GRID_HEIGHT)]
     for x in range(GRID_WIDTH)
 ]
 tiles_lock = threading.Lock()
+
+# Repair state tracking
+bot_repair_progress: int = 0
+bot_repair_location: tuple[int, int] | None = None
 
 
 TOOL_STATE: dict[str, str] = {
@@ -95,6 +101,7 @@ TOOL_STATE: dict[str, str] = {
     "LookFar": "LookFar",
     "OpenCrate": "LookClose",
     "TakeAllFromCrate": "Charging",
+    "RepairHabitat": "LookClose",
 }
 
 
@@ -194,20 +201,30 @@ def _build_scenery_procedural() -> None:
     total += sand_total
     print(f"  Sand patches: {sand_patches} clusters done")
 
-    cave_sites = [
+    habitat_sites = [
         (52, 57),
         (55, 57),
         (52, 60),
         (55, 60),
         (58, 63),
     ]
-    for hx, hy in cave_sites:
-        CreateTile(hx, hy, "cave")
-        CreateTile(hx + 1, hy, "cave")
-        CreateTile(hx, hy + 1, "cave")
-        CreateTile(hx + 1, hy + 1, "cave")
+    for hx, hy in habitat_sites:
+        CreateTile(hx, hy, "habitat")
+        CreateTile(hx + 1, hy, "habitat")
+        CreateTile(hx, hy + 1, "habitat")
+        CreateTile(hx + 1, hy + 1, "habitat")
+        # Initialize damage for each habitat tile
+        habitat_damage[(hx, hy)] = {"damage": random.randint(0, 100), "repaired": False}
+        habitat_damage[(hx + 1, hy)] = {"damage": random.randint(0, 100), "repaired": False}
+        habitat_damage[(hx, hy + 1)] = {"damage": random.randint(0, 100), "repaired": False}
+        habitat_damage[(hx + 1, hy + 1)] = {"damage": random.randint(0, 100), "repaired": False}
+        # Set color based on damage status (broken habitats are dark green)
+        tile_matrix[hx][hy].color = TILE_COLORS["broken_habitat"]
+        tile_matrix[hx + 1][hy].color = TILE_COLORS["broken_habitat"]
+        tile_matrix[hx][hy + 1].color = TILE_COLORS["broken_habitat"]
+        tile_matrix[hx + 1][hy + 1].color = TILE_COLORS["broken_habitat"]
         total += 4
-    print("  Caves: done")
+    print("  Habitats: done")
 
     crates_placed = 0
     attempts = 0
@@ -293,9 +310,9 @@ def _advance_solar_flare_step() -> bool:
 
     gx, gy = _bot_grid_pos()
     tile_type = tile_matrix[gx][gy].type
-    if tile_type == "cave":
+    if tile_type == "habitat":
         STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
-        print("  [SolarFlare] Safe in a cave. Timer reset.")
+        print("  [SolarFlare] Safe in a habitat. Timer reset.")
         return True
 
     bot_energy = 0
@@ -303,7 +320,7 @@ def _advance_solar_flare_step() -> bool:
     # Trigger flash animation
     solar_flare_animation_active = True
     solar_flare_animation_start_time = time.time()
-    print("  [SolarFlare] Bot destroyed by solar flare (not in a cave).")
+    print("  [SolarFlare] Bot destroyed by solar flare (not in a habitat).")
     return False
 
 
@@ -431,15 +448,20 @@ def LookClose() -> dict[str, Any]:
                     t = tile_matrix[nx][ny]
                     t.fog = False
                     label = "center" if dx == 0 and dy == 0 else ""
-                    surrounding.append(
-                        {
-                            "x": t.x,
-                            "y": t.y,
-                            "type": t.type,
-                            "description": t.description,
-                            "position": label,
-                        }
-                    )
+                    tile_info = {
+                        "x": t.x,
+                        "y": t.y,
+                        "type": t.type,
+                        "description": t.description,
+                        "position": label,
+                    }
+                    # Add habitat damage info if it's a habitat
+                    if t.type == "habitat":
+                        habitat = habitat_damage.get((nx, ny))
+                        if habitat:
+                            tile_info["damage"] = habitat["damage"]
+                            tile_info["repaired"] = habitat["repaired"]
+                    surrounding.append(tile_info)
 
     print(
         f"  [LookClose] Bot at tile ({grid_x}, {grid_y}), "
@@ -456,7 +478,8 @@ def LookClose() -> dict[str, Any]:
     }
 
 
-def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) -> bool:
+def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) -> tuple[bool, tuple[int, int] | None]:
+    """Check if line of sight is blocked. Returns (is_blocked, blocking_tile_coords)."""
     dx = abs(to_x - from_x)
     dy = abs(to_y - from_y)
     sx = 1 if from_x < to_x else -1
@@ -468,9 +491,9 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
     while True:
         if (x, y) != (from_x, from_y):
             if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
-                if tile_matrix[x][y].type in {"rocks", "cave"}:
+                if tile_matrix[x][y].type in {"rocks", "habitat"}:
                     tile_matrix[x][y].fog = False
-                    return True
+                    return True, (x, y)
 
         if x == to_x and y == to_y:
             break
@@ -483,7 +506,7 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
             err += dx
             y += sy
 
-    return False
+    return False, None
 
 
 def LookFar() -> dict[str, Any]:
@@ -494,6 +517,8 @@ def LookFar() -> dict[str, Any]:
     radius = bot_lookfar_distance
 
     features: list[dict[str, Any]] = []
+    blocking_tiles_added: set[tuple[int, int]] = set()
+    
     with tiles_lock:
         for dx in range(-radius, radius + 1):
             for dy in range(-radius, radius + 1):
@@ -503,17 +528,48 @@ def LookFar() -> dict[str, Any]:
                 t = tile_matrix[nx][ny]
                 time.sleep(0.001)
                 dist = max(abs(dx), abs(dy))
-                if _is_line_of_sight_blocked(gx, gy, nx, ny):
-                    continue
-                t.fog = False
-                features.append(
-                    {
-                        "type": t.type,
-                        "distance": dist,
-                        "x": nx,
-                        "y": ny,
+                
+                is_blocked, blocking_pos = _is_line_of_sight_blocked(gx, gy, nx, ny)
+                
+                # If blocked, add the blocking tile (if not already added)
+                if is_blocked and blocking_pos and blocking_pos not in blocking_tiles_added:
+                    bx, by = blocking_pos
+                    blocking_tile = tile_matrix[bx][by]
+                    blocking_dist = max(abs(bx - gx), abs(by - gy))
+                    blocking_info = {
+                        "type": blocking_tile.type,
+                        "distance": blocking_dist,
+                        "x": bx,
+                        "y": by,
                     }
-                )
+                    # Add habitat damage info if it's a habitat
+                    if blocking_tile.type == "habitat":
+                        habitat = habitat_damage.get((bx, by))
+                        if habitat:
+                            blocking_info["damage"] = habitat["damage"]
+                            blocking_info["repaired"] = habitat["repaired"]
+                    features.append(blocking_info)
+                    blocking_tiles_added.add(blocking_pos)
+                    continue  # Skip the tile behind the blocker
+                
+                if is_blocked:
+                    continue  # Skip tiles behind blockers
+                
+                # Add visible tile
+                t.fog = False
+                feature_info = {
+                    "type": t.type,
+                    "distance": dist,
+                    "x": nx,
+                    "y": ny,
+                }
+                # Add habitat damage info if it's a habitat
+                if t.type == "habitat":
+                    habitat = habitat_damage.get((nx, ny))
+                    if habitat:
+                        feature_info["damage"] = habitat["damage"]
+                        feature_info["repaired"] = habitat["repaired"]
+                features.append(feature_info)
 
     best: dict[str, dict[str, Any]] = {}
     for f in features:
@@ -524,7 +580,8 @@ def LookFar() -> dict[str, Any]:
 
     print(f"  [LookFar] Scanned radius {radius} from ({gx}, {gy}): found {len(summary)} notable features")
     for f in summary:
-        print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']}")
+        damage_info = f" [damage: {f['damage']}%]" if f.get("damage") is not None else ""
+        print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']}{damage_info}")
 
     return {
         "ok": True,
@@ -608,6 +665,83 @@ def TakeAllFromCrate() -> dict[str, Any]:
     }
 
 
+def RepairHabitat() -> dict[str, Any]:
+    global bot_energy, bot_repair_progress, bot_repair_location
+    if not _advance_solar_flare_step():
+        return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
+    
+    _consume_energy(5)  # Each repair step costs 5 energy (2 steps = 10 total)
+    gx, gy = _bot_grid_pos()
+    habitat = habitat_damage.get((gx, gy))
+    
+    if habitat is None:
+        msg = f"No habitat at tile ({gx}, {gy})."
+        print(f"  [RepairHabitat] {msg}")
+        bot_repair_progress = 0
+        bot_repair_location = None
+        return {"ok": False, "error": msg, "energy": bot_energy}
+    
+    if habitat["repaired"]:
+        msg = f"Habitat at ({gx}, {gy}) is already fully repaired (was {habitat['damage']}% damaged)."
+        print(f"  [RepairHabitat] {msg}")
+        bot_repair_progress = 0
+        bot_repair_location = None
+        return {
+            "ok": True,
+            "already_repaired": True,
+            "damage": 0,
+            "tile_x": gx,
+            "tile_y": gy,
+            "energy": bot_energy,
+            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        }
+    
+    # Check if continuing repair at same location
+    if bot_repair_location == (gx, gy):
+        bot_repair_progress += 1
+    else:
+        # Starting new repair
+        bot_repair_location = (gx, gy)
+        bot_repair_progress = 1
+    
+    print(f"  [RepairHabitat] Repairing habitat at ({gx}, {gy}) - Step {bot_repair_progress}/2 (damage: {habitat['damage']}%)")
+    
+    if bot_repair_progress >= 2:
+        # Repair complete!
+        habitat["repaired"] = True
+        original_damage = habitat["damage"]
+        habitat["damage"] = 0
+        bot_repair_progress = 0
+        bot_repair_location = None
+        # Update habitat color to bright green when repaired
+        tile_matrix[gx][gy].color = TILE_COLORS["habitat"]
+        print(f"  [RepairHabitat] ✓ Habitat fully repaired! Was {original_damage}% damaged, now 0%.")
+        time.sleep(1.0)
+        return {
+            "ok": True,
+            "repair_complete": True,
+            "original_damage": original_damage,
+            "damage": 0,
+            "tile_x": gx,
+            "tile_y": gy,
+            "energy": bot_energy,
+            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        }
+    else:
+        # Partial progress
+        return {
+            "ok": True,
+            "repair_complete": False,
+            "progress": bot_repair_progress,
+            "steps_remaining": 2 - bot_repair_progress,
+            "damage": habitat["damage"],
+            "tile_x": gx,
+            "tile_y": gy,
+            "energy": bot_energy,
+            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        }
+
+
 def get_tool_dispatch() -> dict[str, Any]:
     return {
         "MoveTo": MoveTo,
@@ -615,13 +749,19 @@ def get_tool_dispatch() -> dict[str, Any]:
         "LookFar": LookFar,
         "OpenCrate": OpenCrate,
         "TakeAllFromCrate": TakeAllFromCrate,
+        "RepairHabitat": RepairHabitat,
     }
 
 
 def print_step_status() -> None:
     gx, gy = _bot_grid_pos()
+    habitats_repaired = sum(1 for habitat in habitat_damage.values() if habitat["repaired"])
+    habitats_total = len(habitat_damage)
     print("\n  === STATUS ===")
     print(f"  Energy: {bot_energy}  |  Position: tile ({gx}, {gy})  |  Solar flare in: {STEPS_TO_SOLAR_FLARE} steps")
+    print(f"  Habitats repaired: {habitats_repaired}/{habitats_total}")
+    if bot_repair_progress > 0 and bot_repair_location:
+        print(f"  Repair in progress: {bot_repair_progress}/2 at {bot_repair_location}")
     print(f"  Inventory: {bot_inventory if bot_inventory else '(empty)'}")
     print("  Surroundings:")
     with tiles_lock:
