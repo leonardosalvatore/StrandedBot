@@ -17,7 +17,7 @@ _ui_initialized = False
 
 
 def _start_game() -> None:
-    game_logic.initialize_world()
+    game_logic.initialize_world(use_fog=OLLAMA_PLAY)
     if OLLAMA_PLAY:
         start_ollama_play(game_logic, OLLAMA_MODEL)
 

@@ -34,7 +34,7 @@ TILE_COLORS = {
     "gravel": (140, 120, 100),
     "sand": (220, 200, 120),
     "water": (120, 210, 255),
-    "rocks": (90, 80, 70),
+    "rocks": (80, 70, 60),
     "habitat": (180, 255, 100),
     "broken_habitat": (40, 70, 40),
     "crate": (200, 50, 50),
@@ -89,6 +89,9 @@ tile_matrix: list[list[Tile]] = [
     for x in range(GRID_WIDTH)
 ]
 tiles_lock = threading.Lock()
+
+# Fog of war setting (False when OLLAMA_PLAY=0 for full visibility)
+enable_fog_of_war = True
 
 # Repair state tracking
 bot_repair_progress: int = 0
@@ -157,6 +160,60 @@ def _place_sand_patch(cx: int, cy: int, rx: int, ry: int) -> int:
     return count
 
 
+def _carve_stream(start_x: int, start_y: int, length: int = 28, width: int = 1) -> int:
+    count = 0
+    x = start_x
+    y = start_y
+    dx = random.choice([-1, 1])
+    dy = random.choice([-1, 0, 1])
+
+    for _ in range(length):
+        for wx in range(-width, width + 1):
+            for wy in range(-width, width + 1):
+                nx = x + wx
+                ny = y + wy
+                if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
+                    continue
+
+                if CreateTile(nx, ny, "water")["ok"]:
+                    count += 1
+
+                # Add narrow sand banks around water to feel like a stream bed
+                for sx in range(-2, 3):
+                    for sy in range(-2, 3):
+                        if max(abs(sx), abs(sy)) < 2:
+                            continue
+                        bx = nx + sx
+                        by = ny + sy
+                        if not (0 <= bx < GRID_WIDTH and 0 <= by < GRID_HEIGHT):
+                            continue
+                        with tiles_lock:
+                            if tiles.get((bx, by)) != "gravel":
+                                continue
+                        CreateTile(bx, by, "sand")
+
+        # Meandering stream movement with slight directional persistence
+        if random.random() < 0.25:
+            dx += random.choice([-1, 0, 1])
+            dy += random.choice([-1, 0, 1])
+            dx = max(-1, min(1, dx))
+            dy = max(-1, min(1, dy))
+            if dx == 0 and dy == 0:
+                dx = random.choice([-1, 1])
+
+        x += dx
+        y += dy
+
+        if x < 2 or x >= GRID_WIDTH - 2:
+            dx *= -1
+            x = max(2, min(GRID_WIDTH - 3, x))
+        if y < 2 or y >= GRID_HEIGHT - 2:
+            dy *= -1
+            y = max(2, min(GRID_HEIGHT - 3, y))
+
+    return count
+
+
 def _build_scenery_procedural() -> None:
     t0 = time.time()
     total = 0
@@ -178,17 +235,16 @@ def _build_scenery_procedural() -> None:
         total += _place_ellipse(cx, cy, rx, ry, "rocks", jitter=0.4)
     print(f"  Rocks: {len(rocks)} clusters done")
 
-    lakes = [
-        (60, 17, 6, 5),
-        (40, 33, 5, 4),
-        (20, 33, 5, 4),
-        (80, 33, 5, 4),
-        (40, 48, 4, 3),
+    stream_starts = [
+        (10, 14),
+        (22, 36),
+        (44, 20),
+        (66, 42),
+        (82, 28),
     ]
-    for cx, cy, rx, ry in lakes:
-        _place_border(cx, cy, rx, ry, "sand", thickness=2)
-        total += _place_ellipse(cx, cy, rx, ry, "water", jitter=0.25)
-    print(f"  Lakes: {len(lakes)} done")
+    for sx, sy in stream_starts:
+        total += _carve_stream(sx, sy, length=random.randint(22, 36), width=random.choice([0, 1]))
+    print(f"  Streams: {len(stream_starts)} carved")
 
     sand_patches = 18
     sand_total = 0
@@ -257,11 +313,13 @@ def _initialize_default_tiles() -> None:
                     type="gravel",
                     color=TILE_COLORS["gravel"],
                     description=TILE_DESCRIPTIONS["gravel"],
-                    fog=True,
+                    fog=enable_fog_of_war,
                 )
 
 
-def initialize_world() -> None:
+def initialize_world(use_fog: bool = True) -> None:
+    global enable_fog_of_war
+    enable_fog_of_war = use_fog
     _initialize_default_tiles()
     _build_scenery_procedural()
 
