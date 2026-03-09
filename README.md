@@ -1,5 +1,18 @@
 ## Project Overview
 
+# Project B.O.T.S.
+
+```text
+______    ______   _________   ______  
+|_   _ \  / ___  | |  _   _  | / ____ \ 
+  | |_) || |   |_| |_/ | | \_|| (___ \_|
+  |  __'.| |   ___     | |     '. ___`. 
+ _| |__) | |___| |    _| |_   | \____) |
+|_______/ \______|   |_____|   \______.'
+
+  B R U T A L   O L L A M A   T R E K   S U R V I V A L
+```
+
 **bots** is a survival game built with Pygame Zero where prompt design is part of the gameplay. You can customize the mission prompt sent to the Ollama-controlled bot, shaping how it prioritizes energy, scouting, and habitat use to survive recurring solar flares. The story setup: your expedition is chasing signals from a black hole, but communication bandwidth is extremely limited, so only short text instructions can be transmitted. That constraint is why this project uses the prompt as the control channel—write better instructions, and the bot makes better survival decisions under pressure.
 
 ## Screenshot
