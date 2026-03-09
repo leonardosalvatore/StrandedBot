@@ -1,17 +1,13 @@
-## Project Overview
+## B.O.T.S. 
 
-# Project B.O.T.S.
+    **Brutal** It burns through your GPU wattage just to achieve the bare minimum. It is as unforgiving on your hardware as the planet is on the bot.
 
-```text
-______    ______   _________   ______  
-|_   _ \  / ___  | |  _   _  | / ____ \ 
-  | |_) || |   |_| |_/ | | \_|| (___ \_|
-  |  __'.| |   ___     | |     '. ___`. 
- _| |__) | |___| |    _| |_   | \____) |
-|_______/ \______|   |_____|   \______.'
+    **Ollama** This is the local LLM engine powering the bot's "brain" (and its attitude).
 
-  B R U T A L   O L L A M A   T R E K   S U R V I V A L
-```
+    **Trek**   The robot is forced to traverse a vast, hostile landscape where every step is a struggle.
+
+    **Survival** And it is stranded on a far-off planet with dwindling resources and a very short fuse.
+    
 
 **bots** is a survival game built with Pygame Zero where prompt design is part of the gameplay. You can customize the mission prompt sent to the Ollama-controlled bot, shaping how it prioritizes energy, scouting, and habitat use to survive recurring solar flares. The story setup: your expedition is chasing signals from a black hole, but communication bandwidth is extremely limited, so only short text instructions can be transmitted. That constraint is why this project uses the prompt as the control channel—write better instructions, and the bot makes better survival decisions under pressure.
 
