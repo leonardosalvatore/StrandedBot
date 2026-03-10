@@ -89,7 +89,7 @@ poetry run pytest <test_name>  # or poetry run python -m pytest ...
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_MODEL` | `qwen3.5:9b` | Ollama model for LLM play mode |
+| `OLLAMA_MODEL` | `ministral-3:8b` | Ollama model for LLM play mode |
 | `OLLAMA_PLAY` | `0` | Enable LLM autonomous play (set to 1 to enable) |
 
 ### Tile System

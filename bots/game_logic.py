@@ -1,6 +1,7 @@
 import random
 import threading
 import time
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,6 +12,9 @@ MAP_HEIGHT = 830
 PANEL_HEIGHT = 500
 HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+OLLAMA_PLAY = os.getenv("OLLAMA_PLAY", "0") == "1"
 
 TILE_SIZE = 10
 GRID_WIDTH = MAP_WIDTH // TILE_SIZE

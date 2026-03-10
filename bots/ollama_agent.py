@@ -17,7 +17,6 @@ last_bot_speech = ""
 def get_ollama_settings() -> tuple[str, bool]:
     model = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
     #model = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b")
-    #model = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
     enabled = os.getenv("OLLAMA_PLAY", "0") == "1"
     return model, enabled
 

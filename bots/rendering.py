@@ -46,6 +46,7 @@ _start_window: UIWindow | None = None
 _start_default_button: UIButton | None = None
 _start_custom_button: UIButton | None = None
 _interactive_mode_checkbox: UIButton | None = None
+_start_model_entry: UITextEntryBox | None = None
 _interactive_mode_enabled = True
 _custom_prompt_window: UIWindow | None = None
 _custom_prompt_entry: UITextEntryBox | None = None
@@ -56,7 +57,7 @@ _user_reply_entry: UITextEntryBox | None = None
 _user_reply_send_button: UIButton | None = None
 
 
-def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.UIManager:
+def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model: str = "ministral-3:8b") -> pygame_gui.UIManager:
     """Initialize pygame_gui manager and create the 4 UI windows."""
     global _ui_manager, _stats_window, _log_window, _speech_window, _input_window
     global _stats_text, _log_text, _speech_text, _prompt_text
@@ -79,7 +80,7 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     ])
     
     # Create start menu FIRST so it's on top
-    _create_start_menu(screen_size)
+    _create_start_menu(screen_size, default_model)
     
     # 1. Bot Stats Window (top-right) - minimized by default
     _stats_window = UIWindow(
@@ -149,13 +150,14 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
     return _ui_manager
 
 
-def _create_start_menu(screen_size: tuple[int, int]) -> None:
-    global _start_window, _start_default_button, _start_custom_button, _interactive_mode_checkbox, _interactive_mode_enabled
+def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
+    global _start_window, _start_default_button, _start_custom_button
+    global _interactive_mode_checkbox, _start_model_entry, _interactive_mode_enabled
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
 
-    win_w, win_h = 600, 250
+    win_w, win_h = 600, 300
     x = (screen_size[0] - win_w) // 2
     y = (screen_size[1] - win_h) // 2
     _start_window = UIWindow(
@@ -183,8 +185,20 @@ def _create_start_menu(screen_size: tuple[int, int]) -> None:
         manager=_ui_manager,
         container=_start_window,
     )
+    UILabel(
+        relative_rect=pygame.Rect((20, 150), (140, 30)),
+        text="OLLAMA_MODEL:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_model_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((160, 150), (250, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_model_entry.set_text(default_model or "ministral-3:8b")
     _interactive_mode_checkbox = UIButton(
-        relative_rect=pygame.Rect((20, 150), (390, 40)),
+        relative_rect=pygame.Rect((20, 205), (390, 40)),
         text="Interactive mode, you can reply to Bot question.",
         manager=_ui_manager,
         container=_start_window,
@@ -249,13 +263,15 @@ def _close_custom_prompt_dialog() -> None:
 
 
 def _close_start_menu() -> None:
-    global _start_window, _start_default_button, _start_custom_button, _interactive_mode_checkbox
+    global _start_window, _start_default_button, _start_custom_button
+    global _interactive_mode_checkbox, _start_model_entry
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
     _start_default_button = None
     _start_custom_button = None
     _interactive_mode_checkbox = None
+    _start_model_entry = None
     _close_custom_prompt_dialog()
 
 
@@ -278,8 +294,11 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
     if event.type == UI_BUTTON_PRESSED:
 
         if _start_default_button and event.ui_element == _start_default_button:
+            model_name = "ministral-3:8b"
+            if _start_model_entry is not None:
+                model_name = _start_model_entry.get_text().strip() or "ministral-3:8b"
             _close_start_menu()
-            return {"action": "start_default", "interactive_mode": _interactive_mode_enabled}
+            return {"action": "start_default", "interactive_mode": _interactive_mode_enabled, "model": model_name}
 
         if _start_custom_button and event.ui_element == _start_custom_button:
             return {"action": "open_custom"}
@@ -300,10 +319,13 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             prompt_text = ""
             if _custom_prompt_entry is not None:
                 prompt_text = _custom_prompt_entry.get_text().strip()
+            model_name = "ministral-3:8b"
+            if _start_model_entry is not None:
+                model_name = _start_model_entry.get_text().strip() or "ministral-3:8b"
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()
-            return {"action": "start_custom", "prompt": prompt_text, "interactive_mode": _interactive_mode_enabled}
+            return {"action": "start_custom", "prompt": prompt_text, "interactive_mode": _interactive_mode_enabled, "model": model_name}
 
     return None
 

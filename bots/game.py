@@ -4,7 +4,7 @@ import pygame
 
 from bots import game_logic
 from bots.message_log import message_log
-from bots.ollama_agent import build_base_prompt, get_ollama_settings, start_ollama_play, stop_ollama_model, submit_user_reply
+from bots.ollama_agent import build_base_prompt, start_ollama_play, stop_ollama_model, submit_user_reply
 from bots.rendering import (
     draw_game,
     get_ui_manager,
@@ -19,7 +19,8 @@ WIDTH = game_logic.WIDTH
 HEIGHT = game_logic.HEIGHT
 TITLE = game_logic.TITLE
 
-OLLAMA_MODEL, OLLAMA_PLAY = get_ollama_settings()
+OLLAMA_MODEL = game_logic.OLLAMA_MODEL
+OLLAMA_PLAY = game_logic.OLLAMA_PLAY
 
 GAME_INTERACTIVE_MODE = True  # Default to true
 _ui_initialized = False
@@ -41,7 +42,7 @@ def _start_game() -> None:
 
 
 def _start_game_with_prompt(prompt_text: str, interactive_mode: bool = True) -> None:
-    global _active_prompt, GAME_INTERACTIVE_MODE
+    global _active_prompt, GAME_INTERACTIVE_MODE, OLLAMA_MODEL
     GAME_INTERACTIVE_MODE = interactive_mode
     _active_prompt = prompt_text or build_base_prompt(game_logic)
     _start_game()
@@ -56,7 +57,7 @@ def update(dt: float) -> None:
     
     # Initialize UI on first update (after pygame is ready)
     if not _ui_initialized:
-        initialize_ui((WIDTH, HEIGHT), message_log)
+        initialize_ui((WIDTH, HEIGHT), message_log, OLLAMA_MODEL)
         _ui_initialized = True
     
     # Update pygame_gui (animations, hover states, etc.)
@@ -83,7 +84,7 @@ def on_mouse_down(pos, button):
 
 def on_mouse_up(pos, button):
     """Called by pgzero when mouse is released."""
-    global _game_started, _world_initialized, _active_prompt
+    global _game_started, _world_initialized, _active_prompt, OLLAMA_MODEL
     
     ui_manager = get_ui_manager()
     if ui_manager:
@@ -102,9 +103,15 @@ def on_mouse_up(pos, button):
                     action = startup_action.get("action")
                     if action == "start_default":
                         interactive_mode = startup_action.get("interactive_mode", True)
+                        selected_model = str(startup_action.get("model", OLLAMA_MODEL)).strip()
+                        if selected_model:
+                            OLLAMA_MODEL = selected_model
                         _start_game_with_prompt("", interactive_mode)
                     elif action == "start_custom":
                         interactive_mode = startup_action.get("interactive_mode", True)
+                        selected_model = str(startup_action.get("model", OLLAMA_MODEL)).strip()
+                        if selected_model:
+                            OLLAMA_MODEL = selected_model
                         _start_game_with_prompt(str(startup_action.get("prompt", "")).strip(), interactive_mode)
                     elif action == "open_custom":
                         if not _world_initialized:
@@ -146,19 +153,19 @@ def on_key_down(key, mod, unicode=""):
     if key == pygame.K_F11:
         pygame.display.toggle_fullscreen()
         return
-    
-        # Handle Enter/Shift-Enter in reply dialog
-        if _game_started:
-            key_event = pygame.event.Event(
-                pygame.KEYDOWN,
-                {"key": key, "mod": mod, "unicode": unicode}
-            )
-            reply_action = handle_user_reply_keyboard(key_event)
-            if reply_action and reply_action.get("action") == "send_reply":
-                reply_text = reply_action.get("reply", "")
-                if reply_text:
-                    submit_user_reply(reply_text)
-                    return  # Don't pass the Enter key to UI if we handled it
+
+    # Handle Enter/Shift-Enter in reply dialog
+    if _game_started:
+        key_event = pygame.event.Event(
+            pygame.KEYDOWN,
+            {"key": key, "mod": mod, "unicode": unicode}
+        )
+        reply_action = handle_user_reply_keyboard(key_event)
+        if reply_action and reply_action.get("action") == "send_reply":
+            reply_text = reply_action.get("reply", "")
+            if reply_text:
+                submit_user_reply(reply_text)
+                return  # Don't pass the Enter key to UI if we handled it
     
     ui_manager = get_ui_manager()
     if not ui_manager:
