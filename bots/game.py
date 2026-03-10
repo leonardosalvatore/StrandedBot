@@ -4,8 +4,16 @@ import pygame
 
 from bots import game_logic
 from bots.message_log import message_log
-from bots.ollama_agent import build_base_prompt, get_ollama_settings, start_ollama_play, stop_ollama_model
-from bots.rendering import draw_game, get_ui_manager, handle_startup_ui_event, initialize_ui, open_custom_prompt_dialog
+from bots.ollama_agent import build_base_prompt, get_ollama_settings, start_ollama_play, stop_ollama_model, submit_user_reply
+from bots.rendering import (
+    draw_game,
+    get_ui_manager,
+    handle_startup_ui_event,
+    handle_user_reply_event,
+        handle_user_reply_keyboard,
+    initialize_ui,
+    open_custom_prompt_dialog,
+)
 
 WIDTH = game_logic.WIDTH
 HEIGHT = game_logic.HEIGHT
@@ -13,6 +21,7 @@ TITLE = game_logic.TITLE
 
 OLLAMA_MODEL, OLLAMA_PLAY = get_ollama_settings()
 
+GAME_INTERACTIVE_MODE = True  # Default to true
 _ui_initialized = False
 _game_started = False
 _active_prompt = ""
@@ -31,14 +40,15 @@ def _start_game() -> None:
     show_game_windows()
 
 
-def _start_game_with_prompt(prompt_text: str) -> None:
-    global _active_prompt
+def _start_game_with_prompt(prompt_text: str, interactive_mode: bool = True) -> None:
+    global _active_prompt, GAME_INTERACTIVE_MODE
+    GAME_INTERACTIVE_MODE = interactive_mode
     _active_prompt = prompt_text or build_base_prompt(game_logic)
     _start_game()
     if not prompt_text:
         _active_prompt = build_base_prompt(game_logic)
     if OLLAMA_PLAY:
-        start_ollama_play(game_logic, OLLAMA_MODEL, _active_prompt)
+        start_ollama_play(game_logic, OLLAMA_MODEL, _active_prompt, GAME_INTERACTIVE_MODE)
 
 
 def update(dt: float) -> None:
@@ -91,9 +101,11 @@ def on_mouse_up(pos, button):
                 if startup_action:
                     action = startup_action.get("action")
                     if action == "start_default":
-                        _start_game_with_prompt("")
+                        interactive_mode = startup_action.get("interactive_mode", True)
+                        _start_game_with_prompt("", interactive_mode)
                     elif action == "start_custom":
-                        _start_game_with_prompt(str(startup_action.get("prompt", "")).strip())
+                        interactive_mode = startup_action.get("interactive_mode", True)
+                        _start_game_with_prompt(str(startup_action.get("prompt", "")).strip(), interactive_mode)
                     elif action == "open_custom":
                         if not _world_initialized:
                             game_logic.initialize_world(use_fog=OLLAMA_PLAY)
@@ -101,6 +113,31 @@ def on_mouse_up(pos, button):
                         open_custom_prompt_dialog(build_base_prompt(game_logic))
                     elif action == "custom_prompt_empty":
                         game_logic.bot_last_speech = "Custom prompt is empty. Please enter text first."
+            else:
+                # Game is running - check for user reply events
+                reply_action = handle_user_reply_event(event)
+                if reply_action and reply_action.get("action") == "send_reply":
+                    reply_text = reply_action.get("reply", "")
+                    if reply_text:
+                        submit_user_reply(reply_text)
+
+
+def on_mouse_wheel(x=0, y=0):
+    """Forward mouse wheel to pygame_gui so text boxes can scroll."""
+    ui_manager = get_ui_manager()
+    if not ui_manager:
+        return
+
+    wheel_event = pygame.event.Event(
+        pygame.MOUSEWHEEL,
+        {
+            "x": x,
+            "y": y,
+            "flipped": False,
+            "touch": False,
+        },
+    )
+    ui_manager.process_events(wheel_event)
 
 
 def on_key_down(key, mod, unicode=""):
@@ -109,6 +146,19 @@ def on_key_down(key, mod, unicode=""):
     if key == pygame.K_F11:
         pygame.display.toggle_fullscreen()
         return
+    
+        # Handle Enter/Shift-Enter in reply dialog
+        if _game_started:
+            key_event = pygame.event.Event(
+                pygame.KEYDOWN,
+                {"key": key, "mod": mod, "unicode": unicode}
+            )
+            reply_action = handle_user_reply_keyboard(key_event)
+            if reply_action and reply_action.get("action") == "send_reply":
+                reply_text = reply_action.get("reply", "")
+                if reply_text:
+                    submit_user_reply(reply_text)
+                    return  # Don't pass the Enter key to UI if we handled it
     
     ui_manager = get_ui_manager()
     if not ui_manager:

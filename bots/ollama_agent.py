@@ -1,11 +1,17 @@
 import json
 import os
+import queue
 import subprocess
 import threading
 import time
 from typing import Any
 
 import ollama
+
+# Interactive mode state
+user_reply_queue: queue.Queue = queue.Queue()
+waiting_for_user_reply = False
+last_bot_speech = ""
 
 
 def get_ollama_settings() -> tuple[str, bool]:
@@ -14,6 +20,23 @@ def get_ollama_settings() -> tuple[str, bool]:
     #model = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
     enabled = os.getenv("OLLAMA_PLAY", "0") == "1"
     return model, enabled
+
+
+def submit_user_reply(reply: str) -> None:
+    """Submit a user reply to the bot."""
+    global waiting_for_user_reply
+    user_reply_queue.put(reply)
+    waiting_for_user_reply = False
+
+
+def is_waiting_for_reply() -> bool:
+    """Check if bot is waiting for user reply."""
+    return waiting_for_user_reply
+
+
+def get_last_bot_speech() -> str:
+    """Get the last bot speech for display."""
+    return last_bot_speech
 
 
 def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[str, Any]]:
@@ -171,9 +194,11 @@ def build_base_prompt(game_logic: Any) -> str:
         )
 
 
-def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None) -> None:
+def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None, interactive_mode: bool = False) -> None:
+    global waiting_for_user_reply, last_bot_speech
     print(f"\n{'='*60}")
     print(f"OLLAMA PLAY MODE — model: {model}")
+    print(f"Interactive mode: {interactive_mode}")
     print(f"{'='*60}\n")
 
     prompt_text = initial_prompt.strip() if isinstance(initial_prompt, str) and initial_prompt.strip() else build_base_prompt(game_logic)
@@ -227,6 +252,22 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         if content.strip():
             print(f"  [🤖] {content.strip()}")
             game_logic.bot_last_speech = content.strip()
+            last_bot_speech = content.strip()
+            
+            # Check for question in interactive mode
+            if interactive_mode and "?" in content:
+                waiting_for_user_reply = True
+                print("  [System] Detected question - waiting for user reply...")
+                # Wait for user reply
+                user_reply = user_reply_queue.get()
+                print(f"  [User Reply] {user_reply}")
+                messages.append(msg)
+                messages.append({
+                    "role": "user",
+                    "content": user_reply,
+                })
+                waiting_for_user_reply = False
+                continue
 
         messages.append(msg)
 
@@ -288,10 +329,10 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         time.sleep(0.5)
 
 
-def start_ollama_play(game_logic: Any, model: str, initial_prompt: str | None = None) -> threading.Thread:
+def start_ollama_play(game_logic: Any, model: str, initial_prompt: str | None = None, interactive_mode: bool = False) -> threading.Thread:
     worker = threading.Thread(
         target=run_ollama_play_loop,
-        args=(game_logic, model, initial_prompt),
+        args=(game_logic, model, initial_prompt, interactive_mode),
         daemon=True,
     )
     worker.start()

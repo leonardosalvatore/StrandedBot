@@ -7,6 +7,13 @@ import pygame
 import pygame_gui
 from pygame_gui import UI_BUTTON_PRESSED, UI_BUTTON_START_PRESS, UI_BUTTON_ON_HOVERED
 from pygame_gui.elements import UIButton, UILabel, UIWindow, UITextBox, UITextEntryBox
+from pygame_gui.elements.ui_selection_list import UISelectionList
+
+try:
+    from pygame_gui.core.ui_element import UIElement
+    from pygame_gui.elements import UIPanel
+except ImportError:
+    pass
 
 
 _SPRITE_SHEET: pygame.Surface | None = None
@@ -38,10 +45,15 @@ _last_prompt_html: str | None = None
 _start_window: UIWindow | None = None
 _start_default_button: UIButton | None = None
 _start_custom_button: UIButton | None = None
+_interactive_mode_checkbox: UIButton | None = None
+_interactive_mode_enabled = True
 _custom_prompt_window: UIWindow | None = None
 _custom_prompt_entry: UITextEntryBox | None = None
 _custom_prompt_confirm_button: UIButton | None = None
 _custom_prompt_cancel_button: UIButton | None = None
+_user_reply_window: UIWindow | None = None
+_user_reply_entry: UITextEntryBox | None = None
+_user_reply_send_button: UIButton | None = None
 
 
 def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.UIManager:
@@ -138,12 +150,12 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any) -> pygame_gui.
 
 
 def _create_start_menu(screen_size: tuple[int, int]) -> None:
-    global _start_window, _start_default_button, _start_custom_button
+    global _start_window, _start_default_button, _start_custom_button, _interactive_mode_checkbox, _interactive_mode_enabled
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
 
-    win_w, win_h = 430, 180
+    win_w, win_h = 600, 250
     x = (screen_size[0] - win_w) // 2
     y = (screen_size[1] - win_h) // 2
     _start_window = UIWindow(
@@ -171,6 +183,13 @@ def _create_start_menu(screen_size: tuple[int, int]) -> None:
         manager=_ui_manager,
         container=_start_window,
     )
+    _interactive_mode_checkbox = UIButton(
+        relative_rect=pygame.Rect((20, 150), (390, 40)),
+        text="Interactive mode, you can reply to Bot question.",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _interactive_mode_enabled = True
 
 
 def _open_custom_prompt_dialog() -> None:
@@ -230,12 +249,13 @@ def _close_custom_prompt_dialog() -> None:
 
 
 def _close_start_menu() -> None:
-    global _start_window, _start_default_button, _start_custom_button
+    global _start_window, _start_default_button, _start_custom_button, _interactive_mode_checkbox
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
     _start_default_button = None
     _start_custom_button = None
+    _interactive_mode_checkbox = None
     _close_custom_prompt_dialog()
 
 
@@ -253,15 +273,24 @@ def show_game_windows() -> None:
 
 
 def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
+    global _interactive_mode_enabled
     # Use modern pygame_gui event.type instead of event.user_type
     if event.type == UI_BUTTON_PRESSED:
 
         if _start_default_button and event.ui_element == _start_default_button:
             _close_start_menu()
-            return {"action": "start_default"}
+            return {"action": "start_default", "interactive_mode": _interactive_mode_enabled}
 
         if _start_custom_button and event.ui_element == _start_custom_button:
             return {"action": "open_custom"}
+        
+        if _interactive_mode_checkbox and event.ui_element == _interactive_mode_checkbox:
+            _interactive_mode_enabled = not _interactive_mode_enabled
+            if _interactive_mode_enabled:
+                _interactive_mode_checkbox.set_text("Interactive mode, you can reply to Bot question.")
+            else:
+                _interactive_mode_checkbox.set_text("Not interactive mode, Bot is all alone")
+            return None
 
         if _custom_prompt_cancel_button and event.ui_element == _custom_prompt_cancel_button:
             _close_custom_prompt_dialog()
@@ -274,9 +303,97 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()
-            return {"action": "start_custom", "prompt": prompt_text}
+            return {"action": "start_custom", "prompt": prompt_text, "interactive_mode": _interactive_mode_enabled}
 
     return None
+
+
+def open_user_reply_dialog() -> None:
+    """Open the user reply dialog window."""
+    global _user_reply_window, _user_reply_entry, _user_reply_send_button
+    if _ui_manager is None or _user_reply_window is not None:
+        return
+    
+    win_w, win_h = 620, 220
+    screen_size = _ui_manager.window_resolution
+    x = screen_size[0] - win_w - 10
+    y = screen_size[1] - win_h - 10
+    
+    _user_reply_window = UIWindow(
+        rect=pygame.Rect((x, y), (win_w, win_h)),
+        manager=_ui_manager,
+        window_display_title="Bot is waiting for your reply",
+        resizable=False,
+    )
+    UILabel(
+        relative_rect=pygame.Rect((15, 10), (580, 25)),
+        text="The bot asked you a question. Enter your reply:",
+        manager=_ui_manager,
+        container=_user_reply_window,
+    )
+    _user_reply_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((15, 45), (580, 100)),
+        manager=_ui_manager,
+        container=_user_reply_window,
+    )
+    _user_reply_send_button = UIButton(
+           relative_rect=pygame.Rect((425, 155), (180, 40)),
+        text="Send Reply",
+        manager=_ui_manager,
+        container=_user_reply_window,
+    )
+    pygame.key.start_text_input()
+
+
+def close_user_reply_dialog() -> None:
+    """Close the user reply dialog window."""
+    global _user_reply_window, _user_reply_entry, _user_reply_send_button
+    if _user_reply_window is not None:
+        _user_reply_window.kill()
+    _user_reply_window = None
+    _user_reply_entry = None
+    _user_reply_send_button = None
+    pygame.key.stop_text_input()
+
+
+def handle_user_reply_event(event: pygame.event.Event) -> dict[str, Any] | None:
+    """Handle user reply dialog events."""
+    if event.type == UI_BUTTON_PRESSED:
+        if _user_reply_send_button and event.ui_element == _user_reply_send_button:
+            reply_text = ""
+            if _user_reply_entry is not None:
+                reply_text = _user_reply_entry.get_text().strip()
+            if reply_text:
+                close_user_reply_dialog()
+                return {"action": "send_reply", "reply": reply_text}
+    return None
+
+
+def handle_user_reply_keyboard(event: pygame.event.Event) -> dict[str, Any] | None:
+    """Handle keyboard events for the reply dialog. Enter sends, Shift-Enter creates new line."""
+    if _user_reply_window is None or _user_reply_entry is None:
+        return None
+
+    if event.type == pygame.KEYDOWN:
+        # Check if Enter is pressed without Shift modifier
+        if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+            # If Shift is held, allow normal newline behavior
+            if event.mod & pygame.KMOD_SHIFT:
+                return None
+            # Otherwise, send the reply
+            reply_text = _user_reply_entry.get_text().strip()
+            if reply_text:
+                close_user_reply_dialog()
+                return {"action": "send_reply", "reply": reply_text}
+    return None
+
+
+def check_for_question_and_show_dialog() -> None:
+    """Check if bot is waiting for user reply and show dialog if needed."""
+    from bots import ollama_agent
+    
+    if ollama_agent.is_waiting_for_reply() and _user_reply_window is None:
+        open_user_reply_dialog()
 
 
 def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_prompt: str) -> None:
@@ -344,7 +461,8 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     
     # Update Bot Speech
     if _speech_text and game_logic.bot_last_speech:
-        speech_html = f'<font size=5>🤖 {game_logic.bot_last_speech}</font>'
+        speech_safe = html.escape(game_logic.bot_last_speech).replace(chr(10), '<br>')
+        speech_html = f'<font size=5>🤖 {speech_safe}</font>'
         global _last_speech_html
         if speech_html != _last_speech_html:
             _speech_text.html_text = speech_html
@@ -360,6 +478,9 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
             _prompt_text.html_text = prompt_html
             _prompt_text.rebuild()
             _last_prompt_html = prompt_html
+    
+    # Check if bot is waiting for user reply
+    check_for_question_and_show_dialog()
 
 
 def draw_game(

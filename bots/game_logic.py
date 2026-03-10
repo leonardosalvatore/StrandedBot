@@ -8,7 +8,7 @@ MAP_WIDTH = 1400
 SIDEBAR_WIDTH = 520
 WIDTH = MAP_WIDTH + SIDEBAR_WIDTH
 MAP_HEIGHT = 830
-PANEL_HEIGHT = 250
+PANEL_HEIGHT = 500
 HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
 
@@ -53,8 +53,8 @@ TILE_DESCRIPTIONS = {
 
 TILE_MAX_DISTANCE: dict[str, int] = {
     "gravel": 20,
-    "sand": 5,
-    "water": 1,
+    "sand": 15,
+    "water": 3,
     "rocks": 10,
     "habitat": 5,
     "crate": 5,
@@ -479,9 +479,6 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
         next_gy = max(0, min(GRID_HEIGHT - 1, int(next_y) // TILE_SIZE))
         next_tile = tile_matrix[next_gx][next_gy]
         next_tile.fog = False
-        if next_tile.type == "water":
-            print(f"  [MoveTo] Stopped before water at ({next_gx}, {next_gy})")
-            break
 
         new_x = next_x
         new_y = next_y
