@@ -52,10 +52,10 @@ TILE_DESCRIPTIONS = {
 }
 
 TILE_MAX_DISTANCE: dict[str, int] = {
-    "gravel": 5,
+    "gravel": 20,
     "sand": 5,
-    "water": 0,
-    "rocks": 1,
+    "water": 1,
+    "rocks": 10,
     "habitat": 5,
     "crate": 5,
 }
@@ -601,9 +601,6 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
 
 
 def LookFar() -> dict[str, Any]:
-    global lookfar_scanning_active, lookfar_scanning_start_time
-    global lookfar_scan_radius, lookfar_scan_center_x, lookfar_scan_center_y
-    
     if not _advance_solar_flare_step():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     _consume_energy(1)
@@ -614,22 +611,27 @@ def LookFar() -> dict[str, Any]:
     blocking_tiles_added: set[tuple[int, int]] = set()
     
     with tiles_lock:
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                nx, ny = gx + dx, gy + dy
-                if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
-                    continue
-                t = tile_matrix[nx][ny]
-                time.sleep(0.001)
-                dist = max(abs(dx), abs(dy))
+        # Iterate over tiles within the bounding box of the circle
+        for tx in range(max(0, gx - radius), min(GRID_WIDTH, gx + radius + 1)):
+            for ty in range(max(0, gy - radius), min(GRID_HEIGHT, gy + radius + 1)):
+                # Check if this tile is actually within the circle (Euclidean distance)
+                dx = tx - gx
+                dy = ty - gy
+                euclidean_dist = (dx * dx + dy * dy) ** 0.5
                 
-                is_blocked, blocking_pos = _is_line_of_sight_blocked(gx, gy, nx, ny)
+                if euclidean_dist > radius:
+                    continue
+                
+                t = tile_matrix[tx][ty]
+                time.sleep(0.001)
+                
+                is_blocked, blocking_pos = _is_line_of_sight_blocked(gx, gy, tx, ty)
                 
                 # If blocked, add the blocking tile (if not already added)
                 if is_blocked and blocking_pos and blocking_pos not in blocking_tiles_added:
                     bx, by = blocking_pos
                     blocking_tile = tile_matrix[bx][by]
-                    blocking_dist = max(abs(bx - gx), abs(by - gy))
+                    blocking_dist = ((bx - gx) ** 2 + (by - gy) ** 2) ** 0.5
                     blocking_info = {
                         "type": blocking_tile.type,
                         "distance": blocking_dist,
@@ -653,13 +655,13 @@ def LookFar() -> dict[str, Any]:
                 t.fog = False
                 feature_info = {
                     "type": t.type,
-                    "distance": dist,
-                    "x": nx,
-                    "y": ny,
+                    "distance": euclidean_dist,
+                    "x": tx,
+                    "y": ty,
                 }
                 # Add habitat damage info if it's a habitat
                 if t.type == "habitat":
-                    habitat = habitat_damage.get((nx, ny))
+                    habitat = habitat_damage.get((tx, ty))
                     if habitat:
                         feature_info["damage"] = habitat["damage"]
                         feature_info["repaired"] = habitat["repaired"]
@@ -672,10 +674,10 @@ def LookFar() -> dict[str, Any]:
             best[key] = f
     summary = sorted(best.values(), key=lambda item: item["distance"])
 
-    print(f"  [LookFar] Scanned radius {radius} from ({gx}, {gy}): found {len(summary)} notable features")
+    print(f"  [LookFar] Scanned circle radius {radius} from ({gx}, {gy}): found {len(summary)} notable features")
     for f in summary:
         damage_info = f" [damage: {f['damage']}%]" if f.get("damage") is not None else ""
-        print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']}{damage_info}")
+        print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']:.1f}{damage_info}")
 
     # Hold the LookFar state for 1 second so user sees the sprite
     start_time = time.time()

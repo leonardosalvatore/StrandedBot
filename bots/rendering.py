@@ -171,8 +171,6 @@ def _create_start_menu(screen_size: tuple[int, int]) -> None:
         manager=_ui_manager,
         container=_start_window,
     )
-    print(f"[DEBUG] Start menu created! Window at ({x},{y}), buttons: default={_start_default_button}, custom={_start_custom_button}")
-    print(f"[DEBUG] Button rects: default={_start_default_button.relative_rect}, custom={_start_custom_button.relative_rect}")
 
 
 def _open_custom_prompt_dialog() -> None:
@@ -252,31 +250,24 @@ def show_game_windows() -> None:
         _speech_window.show()
     if _input_window:
         _input_window.show()
-    print("[DEBUG] Game windows shown")
 
 
 def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
     # Use modern pygame_gui event.type instead of event.user_type
     if event.type == UI_BUTTON_PRESSED:
-        print(f"[DEBUG] BUTTON CLICKED! ui_element={getattr(event, 'ui_element', None)}")
-        print(f"[DEBUG] Comparing to: default={_start_default_button}, custom={_start_custom_button}")
 
         if _start_default_button and event.ui_element == _start_default_button:
-            print("[DEBUG] Default button clicked!")
             _close_start_menu()
             return {"action": "start_default"}
 
         if _start_custom_button and event.ui_element == _start_custom_button:
-            print("[DEBUG] Custom button clicked!")
             return {"action": "open_custom"}
 
         if _custom_prompt_cancel_button and event.ui_element == _custom_prompt_cancel_button:
-            print("[DEBUG] Cancel button clicked!")
             _close_custom_prompt_dialog()
             return {"action": "cancel_custom"}
 
         if _custom_prompt_confirm_button and event.ui_element == _custom_prompt_confirm_button:
-            print("[DEBUG] Confirm button clicked!")
             prompt_text = ""
             if _custom_prompt_entry is not None:
                 prompt_text = _custom_prompt_entry.get_text().strip()
@@ -314,10 +305,11 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
         
         step_count = getattr(game_logic, "bot_step_count", 0)
         stats_html = (
-            "<font size=5>"
+            "<font size=4>"
             f"<b>Step:</b> {step_count}<br>"
             f"<b>Energy:</b> {game_logic.bot_energy}<br>"
             f"<b>Position:</b> ({gx}, {gy})<br>"
+            f"<b>Tile:</b> {game_logic.tile_matrix[gx][gy].type}<br>"
             f"<b>Target:</b> ({tgx}, {tgy})<br>"
             f"<b>State:</b> {game_logic.bot_state}<br>"
             f"<b>Solar Flare in:</b> {game_logic.STEPS_TO_SOLAR_FLARE}<br>"
@@ -403,7 +395,7 @@ def draw_game(
         for tx in range(tile_x_start, tile_x_end):
             for ty in range(tile_y_start, tile_y_end):
                 t = game_logic.tile_matrix[tx][ty]
-                color = (60, 60, 60) if t.fog else t.color
+                color = tuple(c // 2 for c in t.color) if t.fog else t.color
                 world_x = tx * game_logic.TILE_SIZE
                 world_y = ty * game_logic.TILE_SIZE
                 screen_x = (

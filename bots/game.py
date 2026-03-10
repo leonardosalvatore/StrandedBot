@@ -48,7 +48,6 @@ def update(dt: float) -> None:
     if not _ui_initialized:
         initialize_ui((WIDTH, HEIGHT), message_log)
         _ui_initialized = True
-        print("[DEBUG] UI initialized, windows should be visible and interactive")
     
     # Update pygame_gui (animations, hover states, etc.)
     ui_manager = get_ui_manager()
@@ -90,7 +89,6 @@ def on_mouse_up(pos, button):
             if not _game_started:
                 startup_action = handle_startup_ui_event(event)
                 if startup_action:
-                    print(f"[DEBUG] Startup action: {startup_action}")
                     action = startup_action.get("action")
                     if action == "start_default":
                         _start_game_with_prompt("")
