@@ -439,11 +439,12 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
 
     curr_gx, curr_gy = start_gx, start_gy
 
+    # Enable diagonal movement for efficient travel
+    dx = 0
+    dy = 0
     if curr_gx != target_x:
         dx = 1 if target_x > curr_gx else -1
-        dy = 0
-    else:
-        dx = 0
+    if curr_gy != target_y:
         dy = 1 if target_y > curr_gy else -1
 
     start_tile = tile_matrix[start_gx][start_gy]
@@ -484,12 +485,16 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
         new_y = next_y
         steps_taken += 1
 
-        if dx != 0 and next_gx == target_x:
-            print(f"  [MoveTo] X-aligned at ({next_gx}, {next_gy}), switching to Y-movement")
-            break
-        if dy != 0 and next_gy == target_y:
+        # Check if we've reached the target (both X and Y aligned)
+        if next_gx == target_x and next_gy == target_y:
             print(f"  [MoveTo] Reached target ({target_x}, {target_y}) in {steps_taken} steps")
             break
+        
+        # Update direction if one axis is aligned (for diagonal->orthogonal transition)
+        if next_gx == target_x:
+            dx = 0
+        if next_gy == target_y:
+            dy = 0
 
     bot_target_x = new_x
     bot_target_y = new_y
