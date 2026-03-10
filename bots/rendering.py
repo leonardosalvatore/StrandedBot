@@ -82,9 +82,9 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
     # Create start menu FIRST so it's on top
     _create_start_menu(screen_size, default_model)
     
-    # 1. Bot Stats Window (top-right) - minimized by default
+    # 1. Bot Stats Window (left-middle) - minimized by default
     _stats_window = UIWindow(
-        rect=pygame.Rect((screen_size[0] - 320, 10), (310, 400)),
+        rect=pygame.Rect((10, max(10, (screen_size[1] // 2) - 200)), (310, 400)),
         manager=_ui_manager,
         window_display_title="Bot Stats",
         resizable=True,
@@ -114,9 +114,9 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
         anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
     
-    # 3. Bot Speech Window (bottom, full width) - minimized by default
+    # 3. Bot Speech Window (top-right) - minimized by default
     _speech_window = UIWindow(
-        rect=pygame.Rect((10, screen_size[1] - 250), (screen_size[0] - 20, 240)),
+        rect=pygame.Rect((max(10, screen_size[0] - 630), 10), (620, 240)),
         manager=_ui_manager,
         window_display_title="Bot Speech",
         resizable=True,
@@ -134,7 +134,7 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
     _input_window = UIWindow(
         rect=pygame.Rect((10, 420), (410, 200)),
         manager=_ui_manager,
-        window_display_title="AI Prompt",
+        window_display_title="Initial AI Prompt",
         resizable=True,
         visible=False,  # Hidden until game starts
     )
@@ -515,9 +515,10 @@ def draw_game(
 ) -> None:
     """Draw the game map and bot sprite (UI windows are drawn separately by pygame_gui)."""
     global _SPRITE_SHEET
+    target_surface = pygame.display.get_surface() or screen.surface
     
     # Clear only the map area (not UI)
-    screen.surface.fill((0, 0, 0))
+    target_surface.fill((0, 0, 0))
     
     gx, gy = game_logic._bot_grid_pos()
     cam_tile_x = gx
@@ -552,7 +553,7 @@ def draw_game(
                 # Only draw if within screen bounds
                 if 0 <= screen_x < game_logic.WIDTH and 0 <= screen_y < game_logic.HEIGHT:
                     pygame.draw.rect(
-                        screen.surface,
+                        target_surface,
                         color,
                         pygame.Rect(int(screen_x), int(screen_y), game_logic.DRAW_TILE_SIZE, game_logic.DRAW_TILE_SIZE)
                     )
@@ -568,7 +569,7 @@ def draw_game(
             print(f"  [Sprite] Failed to load bots.png: {exc}")
             radius_scaled = int(game_logic.BOT_RADIUS * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE))
             pygame.draw.circle(
-                screen.surface,
+                target_surface,
                 (0, 120, 255),
                 (game_logic.WIDTH // 2, game_logic.HEIGHT // 2),
                 radius_scaled,
@@ -590,17 +591,17 @@ def draw_game(
 
     dest_x = int(game_logic.WIDTH / 2) - draw_size // 2
     dest_y = int(game_logic.HEIGHT / 2) - draw_size // 2
-    screen.surface.blit(scaled, (dest_x, dest_y))
+    target_surface.blit(scaled, (dest_x, dest_y))
     
     # Draw solar flare flash effect if active
-    _draw_solar_flare_flash(screen, game_logic)
+    _draw_solar_flare_flash(target_surface, game_logic)
     
     # Update UI panels with latest data
     if message_log:
         update_ui_panels(game_logic, ollama_model, message_log, ai_prompt)
 
 
-def _draw_solar_flare_flash(screen: Any, game_logic: Any) -> None:
+def _draw_solar_flare_flash(surface: pygame.Surface, game_logic: Any) -> None:
     """Draw bright yellow flash overlay when solar flare hits (10 flashes in 2 seconds)."""
     if not game_logic.solar_flare_animation_active:
         return
@@ -618,12 +619,44 @@ def _draw_solar_flare_flash(screen: Any, game_logic: Any) -> None:
     
     # Show flash during first half of each cycle (0.0 to 0.5)
     if cycle_position < 0.5:
-        flash_surface = pygame.Surface(screen.surface.get_size())
+        flash_surface = pygame.Surface(surface.get_size())
         flash_surface.set_alpha(200)  # Semi-transparent
         flash_surface.fill((255, 255, 0))  # Bright yellow
-        screen.surface.blit(flash_surface, (0, 0))
+        surface.blit(flash_surface, (0, 0))
 
 
 def get_ui_manager() -> pygame_gui.UIManager | None:
     """Get the pygame_gui manager for event processing."""
     return _ui_manager
+
+
+def _clamp_window_to_screen(window: UIWindow | None, screen_size: tuple[int, int]) -> None:
+    if window is None:
+        return
+
+    rect = window.get_abs_rect()
+    max_x = max(0, screen_size[0] - rect.width)
+    max_y = max(0, screen_size[1] - rect.height)
+    new_x = max(0, min(rect.x, max_x))
+    new_y = max(0, min(rect.y, max_y))
+
+    if new_x != rect.x or new_y != rect.y:
+        window.set_position((new_x, new_y))
+
+
+def sync_ui_to_screen(screen_size: tuple[int, int]) -> None:
+    """Keep pygame_gui resolution and windows aligned with current display size."""
+    if _ui_manager is None:
+        return
+
+    current_size = tuple(_ui_manager.window_resolution)
+    if current_size != tuple(screen_size):
+        _ui_manager.set_window_resolution(screen_size)
+
+    _clamp_window_to_screen(_start_window, screen_size)
+    _clamp_window_to_screen(_custom_prompt_window, screen_size)
+    _clamp_window_to_screen(_user_reply_window, screen_size)
+    _clamp_window_to_screen(_stats_window, screen_size)
+    _clamp_window_to_screen(_log_window, screen_size)
+    _clamp_window_to_screen(_speech_window, screen_size)
+    _clamp_window_to_screen(_input_window, screen_size)

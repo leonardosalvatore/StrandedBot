@@ -10,9 +10,10 @@ from bots.rendering import (
     get_ui_manager,
     handle_startup_ui_event,
     handle_user_reply_event,
-        handle_user_reply_keyboard,
+    handle_user_reply_keyboard,
     initialize_ui,
     open_custom_prompt_dialog,
+    sync_ui_to_screen,
 )
 
 WIDTH = game_logic.WIDTH
@@ -63,6 +64,9 @@ def update(dt: float) -> None:
     # Update pygame_gui (animations, hover states, etc.)
     ui_manager = get_ui_manager()
     if ui_manager:
+        display_surface = pygame.display.get_surface()
+        if display_surface is not None:
+            sync_ui_to_screen(display_surface.get_size())
         ui_manager.update(dt)
 
     # Update game logic only after start choice is made
@@ -152,6 +156,11 @@ def on_key_down(key, mod, unicode=""):
     # F11 to toggle fullscreen
     if key == pygame.K_F11:
         pygame.display.toggle_fullscreen()
+        ui_manager = get_ui_manager()
+        if ui_manager:
+            display_surface = pygame.display.get_surface()
+            if display_surface is not None:
+                sync_ui_to_screen(display_surface.get_size())
         return
 
     # Handle Enter/Shift-Enter in reply dialog
@@ -235,7 +244,8 @@ def draw() -> None:
     # Draw pygame_gui windows
     ui_manager = get_ui_manager()
     if ui_manager:
-        ui_manager.draw_ui(screen.surface)
+        display_surface = pygame.display.get_surface() or screen.surface
+        ui_manager.draw_ui(display_surface)
 
 
 def run() -> None:
