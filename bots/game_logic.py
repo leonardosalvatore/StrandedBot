@@ -449,10 +449,12 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
 
     start_tile = tile_matrix[start_gx][start_gy]
     terrain_limit = TILE_MAX_DISTANCE.get(start_tile.type, 5)
-    if terrain_limit == 0:
+    
+    # Check if terrain is impassable
+    if terrain_limit <= 0:
         msg = (
             f"Cannot move — stuck on {start_tile.type} at ({start_gx}, {start_gy})! "
-            f"You should not be on water."
+            f"Terrain is impassable."
         )
         print(f"  [MoveTo] BLOCKED: {msg}")
         return {

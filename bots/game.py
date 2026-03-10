@@ -105,6 +105,11 @@ def on_mouse_up(pos, button):
 
 def on_key_down(key, mod, unicode=""):
     """Forward key presses to pygame_gui for text editing."""
+    # F11 to toggle fullscreen
+    if key == pygame.K_F11:
+        pygame.display.toggle_fullscreen()
+        return
+    
     ui_manager = get_ui_manager()
     if not ui_manager:
         return
