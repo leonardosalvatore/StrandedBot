@@ -344,9 +344,10 @@ def _build_scenery_procedural() -> None:
     #     total += 4
     # print("  Habitats: done")
 
+    crates_target = 24
     crates_placed = 0
     attempts = 0
-    while crates_placed < 15 and attempts < 500:
+    while crates_placed < crates_target and attempts < 1000:
         attempts += 1
         cx = random.randint(2, GRID_WIDTH - 3)
         cy = random.randint(2, GRID_HEIGHT - 3)
@@ -358,7 +359,7 @@ def _build_scenery_procedural() -> None:
             }
             crates_placed += 1
             total += 1
-    print(f"  Crates: placed {crates_placed} crates")
+            print(f"  Crates: placed {crates_placed}/{crates_target} crates")
 
     elapsed = time.time() - t0
     print(f"Procedural map complete: {total} non-gravel tiles in {elapsed:.3f}s")
