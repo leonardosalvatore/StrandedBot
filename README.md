@@ -14,6 +14,9 @@
 
 ![Game screenshot](bots/resources/screenshot.jpg)
 
+[How should the robot run?](https://youtu.be/bCgY5f4Rm9s)
+
+
 ## Commands
 
 ### Build/Install
