@@ -50,7 +50,9 @@ def _start_game_with_prompt(prompt_text: str, interactive_mode: bool = True) -> 
     if not prompt_text:
         _active_prompt = build_base_prompt(game_logic)
     if OLLAMA_PLAY:
-        start_ollama_play(game_logic, OLLAMA_MODEL, _active_prompt, GAME_INTERACTIVE_MODE)
+        worker = start_ollama_play(game_logic, OLLAMA_MODEL, _active_prompt, GAME_INTERACTIVE_MODE)
+        if worker is None:
+            game_logic.bot_last_speech = "Ollama is not running. See: https://docs.ollama.com/linux"
 
 
 def update(dt: float) -> None:

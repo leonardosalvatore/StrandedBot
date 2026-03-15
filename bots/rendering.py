@@ -83,8 +83,9 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
     _create_start_menu(screen_size, default_model)
     
     # 1. Bot Stats Window (left-middle) - minimized by default
+    stats_y = max(10, (screen_size[1] // 2) - 200)
     _stats_window = UIWindow(
-        rect=pygame.Rect((10, max(10, (screen_size[1] // 2) - 200)), (310, 400)),
+        rect=pygame.Rect((10, stats_y), (310, 400)),
         manager=_ui_manager,
         window_display_title="Bot Stats",
         resizable=True,
@@ -116,7 +117,7 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
     
     # 3. Bot Speech Window (top-right) - minimized by default
     _speech_window = UIWindow(
-        rect=pygame.Rect((max(10, screen_size[0] - 630), 10), (620, 240)),
+        rect=pygame.Rect((max(10, screen_size[0] - 630), 10), (620, 720)),
         manager=_ui_manager,
         window_display_title="Bot Speech",
         resizable=True,
@@ -130,9 +131,9 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
         anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
     
-    # 4. AI Prompt Window (top-left) - minimized by default
+    # 4. AI Prompt Window (below Bot Stats) - minimized by default
     _input_window = UIWindow(
-        rect=pygame.Rect((10, 420), (410, 200)),
+        rect=pygame.Rect((10, stats_y + 410), (410, 200)),
         manager=_ui_manager,
         window_display_title="Initial AI Prompt",
         resizable=True,

@@ -12,6 +12,7 @@ import ollama
 user_reply_queue: queue.Queue = queue.Queue()
 waiting_for_user_reply = False
 last_bot_speech = ""
+OLLAMA_LINUX_DOCS_URL = "https://docs.ollama.com/linux"
 
 
 def get_ollama_settings() -> tuple[str, bool]:
@@ -36,6 +37,15 @@ def is_waiting_for_reply() -> bool:
 def get_last_bot_speech() -> str:
     """Get the last bot speech for display."""
     return last_bot_speech
+
+
+def is_ollama_running() -> bool:
+    """Return True when the local Ollama server is reachable."""
+    try:
+        ollama.list()
+        return True
+    except Exception:
+        return False
 
 
 def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[str, Any]]:
@@ -328,7 +338,17 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         time.sleep(0.5)
 
 
-def start_ollama_play(game_logic: Any, model: str, initial_prompt: str | None = None, interactive_mode: bool = False) -> threading.Thread:
+def start_ollama_play(
+    game_logic: Any,
+    model: str,
+    initial_prompt: str | None = None,
+    interactive_mode: bool = False,
+) -> threading.Thread | None:
+    if not is_ollama_running():
+        print("[Ollama] Ollama does not appear to be running.")
+        print(f"[Ollama] Start/install instructions: {OLLAMA_LINUX_DOCS_URL}")
+        return None
+
     worker = threading.Thread(
         target=run_ollama_play_loop,
         args=(game_logic, model, initial_prompt, interactive_mode),
