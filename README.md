@@ -92,3 +92,8 @@ Change a different LLM model.
 |----------|---------|-------------|
 | `OLLAMA_MODEL` | `ministral-3:8b` | Ollama model for LLM play mode |
 | `OLLAMA_PLAY` | `0` | Enable LLM autonomous play (set to 1 to enable) |
+
+### License
+
+This project is licensed under the MIT License.
+See [LICENSE](LICENSE) for details.
