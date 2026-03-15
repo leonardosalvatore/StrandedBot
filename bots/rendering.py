@@ -532,15 +532,16 @@ def draw_game(
     tile_y_start = max(0, cam_tile_y - half_h)
     tile_y_end = min(game_logic.GRID_HEIGHT, cam_tile_y + half_h + 1)
 
-    cam_world_x = game_logic.bot_x
-    cam_world_y = game_logic.bot_y
+    # Bot world coordinates are tile-anchored; add half-tile so centered sprite sits in tile center.
+    cam_world_x = game_logic.bot_x + (game_logic.TILE_SIZE / 2)
+    cam_world_y = game_logic.bot_y + (game_logic.TILE_SIZE / 2)
 
     # Draw tiles
     with game_logic.tiles_lock:
         for tx in range(tile_x_start, tile_x_end):
             for ty in range(tile_y_start, tile_y_end):
                 t = game_logic.tile_matrix[tx][ty]
-                color = tuple(c // 2 for c in t.color) if t.fog else t.color
+                color = tuple(c // 3 for c in t.color) if t.fog else t.color
                 world_x = tx * game_logic.TILE_SIZE
                 world_y = ty * game_logic.TILE_SIZE
                 screen_x = (

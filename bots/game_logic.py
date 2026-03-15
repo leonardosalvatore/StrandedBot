@@ -344,7 +344,7 @@ def _build_scenery_procedural() -> None:
     #     total += 4
     # print("  Habitats: done")
 
-    crates_target = 24
+    crates_target = max(32, int(round(8 * area_scale)))
     crates_placed = 0
     attempts = 0
     while crates_placed < crates_target and attempts < 1000:
@@ -631,7 +631,13 @@ def LookClose() -> dict[str, Any]:
     }
 
 
-def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) -> tuple[bool, tuple[int, int] | None]:
+def _is_line_of_sight_blocked(
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    tile_types: list[list[str]] | None = None,
+) -> tuple[bool, tuple[int, int] | None]:
     """Check if line of sight is blocked. Returns (is_blocked, blocking_tile_coords)."""
     dx = abs(to_x - from_x)
     dy = abs(to_y - from_y)
@@ -644,8 +650,8 @@ def _is_line_of_sight_blocked(from_x: int, from_y: int, to_x: int, to_y: int) ->
     while True:
         if (x, y) != (from_x, from_y):
             if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
-                if tile_matrix[x][y].type in {"rocks", "habitat"}:
-                    tile_matrix[x][y].fog = False
+                tile_type = tile_types[x][y] if tile_types is not None else tile_matrix[x][y].type
+                if tile_type in {"rocks", "habitat"}:
                     return True, (x, y)
 
         if x == to_x and y == to_y:
@@ -670,64 +676,70 @@ def LookFar() -> dict[str, Any]:
     radius = bot_lookfar_distance
 
     features: list[dict[str, Any]] = []
+    visible_type_counts: dict[str, int] = {}
     blocking_tiles_added: set[tuple[int, int]] = set()
-    
+    visible_positions: list[tuple[int, int]] = []
+
+    # Snapshot tile types once so expensive LOS work does not hold the world lock.
     with tiles_lock:
-        # Iterate over tiles within the bounding box of the circle
-        for tx in range(max(0, gx - radius), min(GRID_WIDTH, gx + radius + 1)):
-            for ty in range(max(0, gy - radius), min(GRID_HEIGHT, gy + radius + 1)):
-                # Check if this tile is actually within the circle (Euclidean distance)
-                dx = tx - gx
-                dy = ty - gy
-                euclidean_dist = (dx * dx + dy * dy) ** 0.5
-                
-                if euclidean_dist > radius:
-                    continue
-                
-                t = tile_matrix[tx][ty]
-                time.sleep(0.001)
-                
-                is_blocked, blocking_pos = _is_line_of_sight_blocked(gx, gy, tx, ty)
-                
-                # If blocked, add the blocking tile (if not already added)
-                if is_blocked and blocking_pos and blocking_pos not in blocking_tiles_added:
-                    bx, by = blocking_pos
-                    blocking_tile = tile_matrix[bx][by]
-                    blocking_dist = ((bx - gx) ** 2 + (by - gy) ** 2) ** 0.5
-                    blocking_info = {
-                        "type": blocking_tile.type,
-                        "distance": blocking_dist,
-                        "x": bx,
-                        "y": by,
-                    }
-                    # Add habitat damage info if it's a habitat
-                    if blocking_tile.type == "habitat":
-                        habitat = habitat_damage.get((bx, by))
-                        if habitat:
-                            blocking_info["damage"] = habitat["damage"]
-                            blocking_info["repaired"] = habitat["repaired"]
-                    features.append(blocking_info)
-                    blocking_tiles_added.add(blocking_pos)
-                    continue  # Skip the tile behind the blocker
-                
-                if is_blocked:
-                    continue  # Skip tiles behind blockers
-                
-                # Add visible tile
-                t.fog = False
-                feature_info = {
-                    "type": t.type,
-                    "distance": euclidean_dist,
-                    "x": tx,
-                    "y": ty,
+        tile_types = [[tile_matrix[x][y].type for y in range(GRID_HEIGHT)] for x in range(GRID_WIDTH)]
+
+    # Iterate over tiles within the bounding box of the circle.
+    for tx in range(max(0, gx - radius), min(GRID_WIDTH, gx + radius + 1)):
+        for ty in range(max(0, gy - radius), min(GRID_HEIGHT, gy + radius + 1)):
+            dx = tx - gx
+            dy = ty - gy
+            euclidean_dist = (dx * dx + dy * dy) ** 0.5
+
+            if euclidean_dist > radius:
+                continue
+
+            is_blocked, blocking_pos = _is_line_of_sight_blocked(gx, gy, tx, ty, tile_types)
+
+            # If blocked, add the blocking tile (if not already added).
+            if is_blocked and blocking_pos and blocking_pos not in blocking_tiles_added:
+                bx, by = blocking_pos
+                blocking_type = tile_types[bx][by]
+                blocking_dist = ((bx - gx) ** 2 + (by - gy) ** 2) ** 0.5
+                blocking_info = {
+                    "type": blocking_type,
+                    "distance": blocking_dist,
+                    "x": bx,
+                    "y": by,
                 }
-                # Add habitat damage info if it's a habitat
-                if t.type == "habitat":
-                    habitat = habitat_damage.get((tx, ty))
+                if blocking_type == "habitat":
+                    habitat = habitat_damage.get((bx, by))
                     if habitat:
-                        feature_info["damage"] = habitat["damage"]
-                        feature_info["repaired"] = habitat["repaired"]
-                features.append(feature_info)
+                        blocking_info["damage"] = habitat["damage"]
+                        blocking_info["repaired"] = habitat["repaired"]
+                features.append(blocking_info)
+                blocking_tiles_added.add(blocking_pos)
+                continue
+
+            if is_blocked:
+                continue
+
+            visible_positions.append((tx, ty))
+            tile_type = tile_types[tx][ty]
+            visible_type_counts[tile_type] = visible_type_counts.get(tile_type, 0) + 1
+
+            feature_info = {
+                "type": tile_type,
+                "distance": euclidean_dist,
+                "x": tx,
+                "y": ty,
+            }
+            if tile_type == "habitat":
+                habitat = habitat_damage.get((tx, ty))
+                if habitat:
+                    feature_info["damage"] = habitat["damage"]
+                    feature_info["repaired"] = habitat["repaired"]
+            features.append(feature_info)
+
+    # Reveal fog for visible tiles in one short critical section.
+    with tiles_lock:
+        for tx, ty in visible_positions:
+            tile_matrix[tx][ty].fog = False
 
     best: dict[str, dict[str, Any]] = {}
     for f in features:
@@ -737,20 +749,21 @@ def LookFar() -> dict[str, Any]:
     summary = sorted(best.values(), key=lambda item: item["distance"])
 
     print(f"  [LookFar] Scanned circle radius {radius} from ({gx}, {gy}): found {len(summary)} notable features")
+    if visible_type_counts:
+        counts_text = ", ".join(
+            f"{k}:{v}" for k, v in sorted(visible_type_counts.items(), key=lambda item: item[0])
+        )
+        print(f"    visible counts -> {counts_text}")
     for f in summary:
         damage_info = f" [damage: {f['damage']}%]" if f.get("damage") is not None else ""
         print(f"    {f['type']:>7} at ({f['x']}, {f['y']}) dist={f['distance']:.1f}{damage_info}")
-
-    # Hold the LookFar state for 1 second so user sees the sprite
-    start_time = time.time()
-    while time.time() - start_time < 1.0:
-        time.sleep(0.05)
 
     return {
         "ok": True,
         "bot_tile_x": gx,
         "bot_tile_y": gy,
         "features": summary,
+        "visible_type_counts": visible_type_counts,
         "energy": bot_energy,
         "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
     }
