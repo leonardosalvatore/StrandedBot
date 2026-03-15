@@ -587,7 +587,7 @@ def draw_game(
     )
     sprite = _SPRITE_SHEET.subsurface(src_rect)
 
-    draw_size = int(game_logic.BOT_RADIUS * 6 * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE))
+    draw_size = max(8, int(game_logic.BOT_RADIUS * 6 * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE) / 4))
     scaled = pygame.transform.smoothscale(sprite, (draw_size, draw_size))
 
     dest_x = int(game_logic.WIDTH / 2) - draw_size // 2

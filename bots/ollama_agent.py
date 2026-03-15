@@ -56,8 +56,8 @@ def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[
                 "name": "MoveTo",
                 "description": (
                     "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
-                    "The bot will move up to 20 tiles per call. "
-                    "Terrain limits: gravel=20 tiles, rocks=10 tiles, sand/habitat/crate=5 tiles, water=1 tile. "
+                    "The bot will move up to 40 tiles per call. "
+                    "Terrain limits: gravel=40 tiles, rocks=20 tiles, sand/habitat/crate=10 tiles, water=1 tile. "
                     "Costs 1 energy per tile of movement."
                 ),
                 "parameters": {

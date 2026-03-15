@@ -16,7 +16,7 @@ TITLE = "Bots"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
 OLLAMA_PLAY = os.getenv("OLLAMA_PLAY", "0") == "1"
 
-TILE_SIZE = 8
+TILE_SIZE = 4
 GRID_WIDTH = MAP_WIDTH // TILE_SIZE
 GRID_HEIGHT = MAP_HEIGHT // TILE_SIZE
 
@@ -56,12 +56,12 @@ TILE_DESCRIPTIONS = {
 }
 
 TILE_MAX_DISTANCE: dict[str, int] = {
-    "gravel": 20,
-    "sand": 15,
-    "water": 3,
-    "rocks": 10,
-    "habitat": 5,
-    "crate": 5,
+    "gravel": 40,
+    "sand": 30,
+    "water": 6,
+    "rocks": 20,
+    "habitat": 10,
+    "crate": 10,
 }
 
 
@@ -84,7 +84,7 @@ bot_energy = bot_start_energy
 bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"
 bot_last_speech: str = ""
-bot_lookfar_distance = 20
+bot_lookfar_distance = 40
 bot_step_count: int = 0
 
 
@@ -218,45 +218,103 @@ def _carve_stream(start_x: int, start_y: int, length: int = 28, width: int = 1) 
     return count
 
 
+def _place_rock_field(cx: int, cy: int, radius: int, density: float = 0.95) -> int:
+    """Build an irregular rock blob using multiple random walkers."""
+    target_tiles = max(24, int(radius * radius * 2.6 * density))
+    max_attempts = target_tiles * 40
+    walkers = [(cx, cy) for _ in range(random.randint(3, 6))]
+    placed: set[tuple[int, int]] = set()
+    count = 0
+    attempts = 0
+
+    while len(placed) < target_tiles and attempts < max_attempts:
+        attempts += 1
+        i = random.randrange(len(walkers))
+        x, y = walkers[i]
+
+        # Occasionally pull walkers back toward center to keep cohesive clusters.
+        if random.random() < 0.18:
+            if x < cx:
+                x += 1
+            elif x > cx:
+                x -= 1
+            if y < cy:
+                y += 1
+            elif y > cy:
+                y -= 1
+
+        x += random.choice([-1, 0, 1])
+        y += random.choice([-1, 0, 1])
+
+        if x < 1 or x >= GRID_WIDTH - 1 or y < 1 or y >= GRID_HEIGHT - 1:
+            x = max(1, min(GRID_WIDTH - 2, x))
+            y = max(1, min(GRID_HEIGHT - 2, y))
+
+        dx = x - cx
+        dy = y - cy
+        if dx * dx + dy * dy > int((radius * 1.35) ** 2):
+            x = cx + (dx // 2)
+            y = cy + (dy // 2)
+
+        walkers[i] = (x, y)
+
+        if not (0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT):
+            continue
+        if (x - cx) * (x - cx) + (y - cy) * (y - cy) > int((radius * 1.45) ** 2):
+            continue
+
+        if CreateTile(x, y, "rocks")["ok"] and (x, y) not in placed:
+            placed.add((x, y))
+            count += 1
+
+    return count
+
+
 def _build_scenery_procedural() -> None:
     t0 = time.time()
     total = 0
     print("Generating map procedurally...")
 
-    rocks = [
-        (20, 17, 7, 5),
-        (40, 17, 6, 5),
-        (60, 32, 7, 5),
-        (80, 17, 6, 5),
-        (20, 48, 7, 5),
-        (80, 48, 7, 5),
-        (40, 62, 7, 5),
-        (80, 62, 7, 5),
-        (15, 62, 5, 4),
-        (60, 48, 5, 4),
-    ]
-    for cx, cy, rx, ry in rocks:
-        total += _place_ellipse(cx, cy, rx, ry, "rocks", jitter=0.4)
-    print(f"  Rocks: {len(rocks)} clusters done")
+    # Original terrain tuning was authored for 8px tiles.
+    terrain_scale = 8 / TILE_SIZE
 
-    stream_starts = [
-        (10, 14),
-        (22, 36),
-        (44, 20),
-        (66, 42),
-        (82, 28),
-    ]
-    for sx, sy in stream_starts:
-        total += _carve_stream(sx, sy, length=random.randint(22, 36), width=random.choice([0, 1]))
-    print(f"  Streams: {len(stream_starts)} carved")
+    def _scaled(v: int) -> int:
+        return max(1, int(round(v * terrain_scale)))
 
-    sand_patches = 18
+    # Scale biome counts by map area relative to the original 8px-tile tuning.
+    area_scale = terrain_scale * terrain_scale
+
+    rock_fields = max(14, int(round(14 * area_scale)))
+    rock_total = 0
+    for _ in range(rock_fields):
+        cx = random.randint(6, GRID_WIDTH - 7)
+        cy = random.randint(6, GRID_HEIGHT - 7)
+        radius = random.randint(_scaled(3), _scaled(8))
+        rock_total += _place_rock_field(cx, cy, radius, density=random.uniform(0.85, 1.1))
+    total += rock_total
+    print(f"  Rocks: {rock_fields} irregular fields done")
+
+    stream_count = max(6, int(round(6 * area_scale)))
+    stream_total = 0
+    for _ in range(stream_count):
+        sx = random.randint(4, GRID_WIDTH - 5)
+        sy = random.randint(4, GRID_HEIGHT - 5)
+        stream_total += _carve_stream(
+            sx,
+            sy,
+            length=random.randint(_scaled(26), _scaled(52)),
+            width=random.choice([1, _scaled(1)]),
+        )
+    total += stream_total
+    print(f"  Streams: {stream_count} carved")
+
+    sand_patches = max(18, int(round(22 * area_scale)))
     sand_total = 0
     for _ in range(sand_patches):
         cx = random.randint(3, GRID_WIDTH - 4)
         cy = random.randint(3, GRID_HEIGHT - 4)
-        rx = random.randint(3, 7)
-        ry = random.randint(3, 7)
+        rx = random.randint(_scaled(3), _scaled(7))
+        ry = random.randint(_scaled(3), _scaled(7))
         sand_total += _place_sand_patch(cx, cy, rx, ry)
     total += sand_total
     print(f"  Sand patches: {sand_patches} clusters done")
