@@ -26,14 +26,14 @@ DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W
 
 BOT_RADIUS = 10
 BOT_SPEED = 220
-STEPS_SOLAR_FLARE_EVERY = 50
-STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
-ROCKS_REQUIRED_FOR_HABITAT = 5
+HOURS_SOLAR_FLARE_EVERY = 50
+HOURS_TO_SOLAR_FLARE = HOURS_SOLAR_FLARE_EVERY
+ROCKS_REQUIRED_FOR_HABITAT = 2
 
 # Solar flare animation state
 solar_flare_animation_active = False
 solar_flare_animation_start_time = 0.0
-solar_flare_last_step = -1
+solar_flare_last_hour = -1
 
 TILE_TYPES = {"gravel", "sand", "water", "rocks", "habitat", "crate"}
 TILE_COLORS = {
@@ -85,7 +85,7 @@ bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"
 bot_last_speech: str = ""
 bot_lookfar_distance = 40
-bot_step_count: int = 0
+bot_hour_count: int = 0
 
 
 tiles: dict[tuple[int, int], str] = {}
@@ -418,21 +418,21 @@ def _consume_energy(amount: int = 1) -> None:
     bot_energy = max(0, bot_energy - amount)
 
 
-def _advance_solar_flare_step(current_step: int | None = None) -> bool:
+def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
     """Advance the solar flare countdown and resolve effects.
 
-    Returns True if the bot survives this step, False if destroyed.
+    Returns True if the bot survives this hour, False if destroyed.
     """
-    global STEPS_TO_SOLAR_FLARE, bot_energy, bot_state
+    global HOURS_TO_SOLAR_FLARE, bot_energy, bot_state
     global solar_flare_animation_active, solar_flare_animation_start_time
-    global solar_flare_last_step
-    step = current_step if current_step is not None else bot_step_count
-    if step > 0 and step == solar_flare_last_step:
+    global solar_flare_last_hour
+    hour = current_hour if current_hour is not None else bot_hour_count
+    if hour > 0 and hour == solar_flare_last_hour:
         return True
-    if step > 0:
-        solar_flare_last_step = step
-    STEPS_TO_SOLAR_FLARE -= 1
-    if STEPS_TO_SOLAR_FLARE > 0:
+    if hour > 0:
+        solar_flare_last_hour = hour
+    HOURS_TO_SOLAR_FLARE -= 1
+    if HOURS_TO_SOLAR_FLARE > 0:
         return True
 
     # Solar flare occurs - destroy all habitats and drain energy (unless protected)
@@ -460,7 +460,7 @@ def _advance_solar_flare_step(current_step: int | None = None) -> bool:
     solar_flare_animation_start_time = time.time()
     
     # Reset countdown
-    STEPS_TO_SOLAR_FLARE = STEPS_SOLAR_FLARE_EVERY
+    HOURS_TO_SOLAR_FLARE = HOURS_SOLAR_FLARE_EVERY
     
     # Bot survives (unless energy runs out)
     if bot_energy <= 0:
@@ -479,7 +479,7 @@ def _bot_grid_pos() -> tuple[int, int]:
 
 def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
     global bot_target_x, bot_target_y
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     target_x = max(0, min(GRID_WIDTH - 1, int(target_x)))
     target_y = max(0, min(GRID_HEIGHT - 1, int(target_y)))
@@ -492,12 +492,12 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
             "ok": True,
             "target_tile_x": target_x,
             "target_tile_y": target_y,
-            "steps_taken": 0,
+            "hours_taken": 0,
             "tile_x": start_gx,
             "tile_y": start_gy,
             "tile_type": tile_matrix[start_gx][start_gy].type,
             "energy": bot_energy,
-            "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+            "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
         }
 
     curr_gx, curr_gy = start_gx, start_gy
@@ -529,7 +529,7 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
             "tile_type": start_tile.type,
         }
 
-    steps_taken = 0
+    hours_taken = 0
     new_x, new_y = bot_target_x, bot_target_y
     for _ in range(min(10, terrain_limit)):
         _consume_energy(1)
@@ -545,11 +545,11 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
 
         new_x = next_x
         new_y = next_y
-        steps_taken += 1
+        hours_taken += 1
 
         # Check if we've reached the target (both X and Y aligned)
         if next_gx == target_x and next_gy == target_y:
-            print(f"  [MoveTo] Reached target ({target_x}, {target_y}) in {steps_taken} steps")
+            print(f"  [MoveTo] Reached target ({target_x}, {target_y}) in {hours_taken} hours")
             break
         
         # Update direction if one axis is aligned (for diagonal->orthogonal transition)
@@ -566,26 +566,26 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
 
     print(
         f"  [MoveTo] From ({start_gx}, {start_gy}) toward ({target_x}, {target_y}), "
-        f"took {steps_taken} steps → ({grid_x}, {grid_y}) = {landed.type}"
+        f"took {hours_taken} hours → ({grid_x}, {grid_y}) = {landed.type}"
     )
 
     return {
         "ok": True,
         "target_tile_x": target_x,
         "target_tile_y": target_y,
-        "steps_taken": steps_taken,
+        "hours_taken": hours_taken,
         "terrain_limit": terrain_limit,
         "tile_x": grid_x,
         "tile_y": grid_y,
         "tile_type": landed.type,
         "tile_description": landed.description,
         "energy": bot_energy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
 def LookClose() -> dict[str, Any]:
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     _consume_energy(1)
     grid_x, grid_y = _bot_grid_pos()
@@ -627,7 +627,7 @@ def LookClose() -> dict[str, Any]:
         "bot_tile_y": grid_y,
         "surrounding": surrounding,
         "energy": bot_energy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
@@ -669,7 +669,7 @@ def _is_line_of_sight_blocked(
 
 
 def LookFar() -> dict[str, Any]:
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
@@ -765,12 +765,12 @@ def LookFar() -> dict[str, Any]:
         "features": summary,
         "visible_type_counts": visible_type_counts,
         "energy": bot_energy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
 def OpenCrate() -> dict[str, Any]:
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
@@ -800,13 +800,13 @@ def OpenCrate() -> dict[str, Any]:
         "tile_x": gx,
         "tile_y": gy,
         "energy": bot_energy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
 def TakeAllFromCrate() -> dict[str, Any]:
     global bot_energy
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     _consume_energy(1)
     gx, gy = _bot_grid_pos()
@@ -837,13 +837,13 @@ def TakeAllFromCrate() -> dict[str, Any]:
         "energy": bot_energy,
         "tile_x": gx,
         "tile_y": gy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
 def Dig() -> dict[str, Any]:
     global bot_inventory
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
     
     _consume_energy(1)
@@ -871,13 +871,13 @@ def Dig() -> dict[str, Any]:
         "tile_x": gx,
         "tile_y": gy,
         "energy": bot_energy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
 def CreateHabitat() -> dict[str, Any]:
     global bot_inventory
-    if not _advance_solar_flare_step():
+    if not _advance_solar_flare_hour():
         return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
 
     _consume_energy(1)
@@ -935,7 +935,7 @@ def CreateHabitat() -> dict[str, Any]:
         "rocks_consumed": ROCKS_REQUIRED_FOR_HABITAT,
         "rocks_in_inventory": rocks_left,
         "energy": bot_energy,
-        "steps_to_solar_flare": STEPS_TO_SOLAR_FLARE,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
     }
 
 
@@ -951,11 +951,11 @@ def get_tool_dispatch() -> dict[str, Any]:
     }
 
 
-def print_step_status() -> None:
+def print_hour_status() -> None:
     gx, gy = _bot_grid_pos()
     habitats_total = len(habitat_damage)
     print("\n  === STATUS ===")
-    print(f"  Energy: {bot_energy}  |  Position: tile ({gx}, {gy})  |  Solar flare in: {STEPS_TO_SOLAR_FLARE} steps")
+    print(f"  Energy: {bot_energy}  |  Position: tile ({gx}, {gy})  |  Solar flare in: {HOURS_TO_SOLAR_FLARE} hours")
     print(f"  Habitats existing: {habitats_total}")
     print(f"  Inventory: {bot_inventory if bot_inventory else '(empty)'}")
     print("  Surroundings:")
@@ -993,12 +993,12 @@ def update(dt: float) -> None:
 
     if dist > 0.5:
         bot_state = "Moving"
-        step = move_speed * dt
-        if step >= dist:
+        hour = move_speed * dt
+        if hour >= dist:
             bot_x = bot_target_x
             bot_y = bot_target_y
         else:
-            bot_x += (diff_x / dist) * step
-            bot_y += (diff_y / dist) * step
+            bot_x += (diff_x / dist) * hour
+            bot_y += (diff_y / dist) * hour
     elif bot_state == "Moving":
         bot_state = "Waiting"

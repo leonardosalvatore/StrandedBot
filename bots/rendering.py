@@ -443,16 +443,16 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
             inventory_text = "(empty)"
         inventory_text = html.escape(inventory_text)
         
-        step_count = getattr(game_logic, "bot_step_count", 0)
+        hour_count = getattr(game_logic, "bot_hour_count", 0)
         stats_html = (
             "<font size=4>"
-            f"<b>Step:</b> {step_count}<br>"
+            f"<b>hour:</b> {hour_count}<br>"
             f"<b>Energy:</b> {game_logic.bot_energy}<br>"
             f"<b>Position:</b> ({gx}, {gy})<br>"
             f"<b>Tile:</b> {game_logic.tile_matrix[gx][gy].type}<br>"
             f"<b>Target:</b> ({tgx}, {tgy})<br>"
             f"<b>State:</b> {game_logic.bot_state}<br>"
-            f"<b>Solar Flare in:</b> {game_logic.STEPS_TO_SOLAR_FLARE}<br>"
+            f"<b>Solar Flare in:</b> {game_logic.HOURS_TO_SOLAR_FLARE}<br>"
             f"<b>Habitats:</b> {habitats_total}<br>"
             f"<b>Inventory:</b> {inventory_text}<br>"
             f"<b>Model:</b> {ollama_model}"

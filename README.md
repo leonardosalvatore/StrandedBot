@@ -4,7 +4,7 @@
 
 **Ollama** This is the local LLM engine powering the bot's "brain" (and its attitude).
 
-**Trek**   The robot is forced to traverse a vast, hostile landscape where every step is a struggle.
+**Trek**   The robot is forced to traverse a vast, hostile landscape where every hour is a struggle.
 
 **Survival** And it is stranded on a far-off planet with dwindling resources and a very short fuse.
 
@@ -48,9 +48,9 @@ Change a different LLM model.
 
 - **`bots/game_logic.py`** - Core game state and mechanics (~790 lines):
   - Tile/map data structures and procedural generation
-  - Solar flare countdown system (20 steps between flares)
+  - Solar flare countdown system (20 hours between flares)
   - Habitat damage tracking (0-100% per habitat)
-  - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `OpenCrate`, `TakeAllFromCrate`, `RepairHabitat`)
+  - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `OpenCrate`, `TakeAllFromCrate`, `CreateHabitat`,`Dig`)
   - Movement update loop and status helpers
   - Line-of-sight calculations for blocking terrain
 
@@ -73,7 +73,7 @@ Change a different LLM model.
 - **`bots/ollama_agent.py`** - Ollama integration (~280 lines):
   - Mission prompt: "Repair all damaged habitats!"
   - Tool schema definitions for 6 bot actions
-  - Tool-calling loop with step-based execution
+  - Tool-calling loop with hour-based execution
   - Model lifecycle helpers
 
 - **`bots/cli.py`** - CLI entry point:

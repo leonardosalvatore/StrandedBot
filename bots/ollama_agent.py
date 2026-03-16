@@ -188,7 +188,7 @@ def build_base_prompt(game_logic: Any) -> str:
     return (
         "You are a robot explorer. Don't ask any questions it will cost you energy.\n"
         f"The map is {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT} tiles. "
-        f"You run on battery. Solar flares occur every {game_logic.STEPS_SOLAR_FLARE_EVERY} steps and DESTROY ALL HABITATS while draining 100 energy unless you are in a habitat at flare time. "
+        f"You run on battery. Solar flares occur every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours and DESTROY ALL HABITATS while draining 100 energy unless you are in a habitat at flare time. "
         f"Build habitats by digging {rocks_required} rocks. "
         f"- Dig: dig a rock from a rocks tile on your current location. Adds 1 rock to inventory. {rocks_required} rocks = 1 new buildable habitat.\n"
         f"- CreateHabitat: build a habitat on your current tile using {rocks_required} rocks from inventory.\n"
@@ -217,11 +217,11 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
     tools = build_ollama_tools(game_logic.bot_lookfar_distance, game_logic.ROCKS_REQUIRED_FOR_HABITAT)
     tool_dispatch = game_logic.get_tool_dispatch()
 
-    step = 0
+    hour = 0
     while True:
-        step += 1
-        game_logic.bot_step_count = step
-        if not game_logic._advance_solar_flare_step(step):
+        hour += 1
+        game_logic.bot_hour_count = hour
+        if not game_logic._advance_solar_flare_hour(hour):
             print("  [System] Bot destroyed by solar flare. Stopping play loop.")
             return
 
@@ -230,7 +230,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                 break
             time.sleep(0.1)
 
-        print(f"\n--- Step {step} ---")
+        print(f"\n--- hour {hour} ---")
 
         game_logic.bot_state = "Thinking"
         game_logic._consume_energy(1)
@@ -329,7 +329,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
             )
 
         game_logic.bot_state = "Waiting"
-        game_logic.print_step_status()
+        game_logic.print_hour_status()
 
         if game_logic.bot_energy <= 0:
             print("\n  *** ROBOT SHUT DOWN — OUT OF ENERGY ***")
