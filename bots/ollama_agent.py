@@ -1,12 +1,15 @@
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
 from typing import Any
 
 import ollama
+
+from bots import game_logic
 
 # Interactive mode state
 user_reply_queue: queue.Queue = queue.Queue()
@@ -15,8 +18,65 @@ last_bot_speech = ""
 OLLAMA_LINUX_DOCS_URL = "https://docs.ollama.com/linux"
 
 
+    # Some models ignore native tool-calling and instead print a JSON snippet
+    # like {"name": "MoveTo", "arguments": {...}} in plain text. We scan
+    # fenced JSON blocks (and then full content) to recover those intents.
+def _coerce_tool_calls(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return structured tool calls from metadata or JSON content fallback."""
+    tool_calls = msg.get("tool_calls") or []
+    if tool_calls:
+        return tool_calls
+
+    content = (msg.get("content") or "").strip()
+    if not content:
+        return []
+
+    candidates: list[str] = []
+    fence_matches = re.findall(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", content, flags=re.DOTALL)
+    candidates.extend(fence_matches)
+    candidates.append(content)
+
+    parsed: Any = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+
+    if parsed is None:
+        return []
+
+    items = parsed if isinstance(parsed, list) else [parsed]
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        if "function" in item and isinstance(item["function"], dict):
+            fn_name = item["function"].get("name", "")
+            fn_args = item["function"].get("arguments", {})
+        else:
+            fn_name = item.get("name", "")
+            fn_args = item.get("arguments", {})
+
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            continue
+
+        normalized.append(
+            {
+                "function": {
+                    "name": fn_name.strip(),
+                    "arguments": fn_args if isinstance(fn_args, (dict, str)) else {},
+                }
+            }
+        )
+
+    return normalized
+
+
 def get_ollama_settings() -> tuple[str, bool]:
-    model = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+    model = os.getenv("OLLAMA_MODEL", game_logic.OLLAMA_MODEL)
     #model = os.getenv("OLLAMA_MODEL", "lfm2.5-thinking:1.2b")
     enabled = os.getenv("OLLAMA_PLAY", "0") == "1"
     return model, enabled
@@ -56,8 +116,8 @@ def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[
                 "name": "MoveTo",
                 "description": (
                     "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
-                    "The bot will move up to 40 tiles per call. "
-                    "Terrain limits: gravel=40 tiles, rocks=20 tiles, sand/habitat/crate=10 tiles, water=1 tile. "
+                    "The bot can move over any tile type. "
+                    "The bot will move up to 20 tiles per call. "
                     "Costs 1 energy per tile of movement."
                 ),
                 "parameters": {
@@ -195,7 +255,7 @@ def build_base_prompt(game_logic: Any) -> str:
         "WARNING: Solar flares DESTROY all habitats and drain 100 energy if you are not sheltered! Keep your energy high by collecting crates. "
         "Your MISSION is to survive by collecting crates for energy and managing resources wisely."
         f"Here are the tools you can use to complete your MISSION.\n"
-        "- Move: move to an adjacent tile (up, down, left, right).\n"
+        "- MoveTo: move toward a target tile, up to 20 tiles per call, over any tile type.\n"
         "- LookClose: look at the tiles adjacent to your current location.\n"
         "- LookFar: look at the tiles within your vision range.\n"
         "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
@@ -280,7 +340,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
 
         messages.append(msg)
 
-        tool_calls = msg.get("tool_calls") or []
+        tool_calls = _coerce_tool_calls(msg)
         if not tool_calls and game_logic.bot_x == game_logic.bot_target_x and game_logic.bot_y == game_logic.bot_target_y:
             game_logic.bot_state = "Waiting"
             print("  [System] No tool call — nudging bot to continue exploring.")

@@ -9,6 +9,8 @@ from pygame_gui import UI_BUTTON_PRESSED, UI_BUTTON_START_PRESS, UI_BUTTON_ON_HO
 from pygame_gui.elements import UIButton, UILabel, UIWindow, UITextBox, UITextEntryBox
 from pygame_gui.elements.ui_selection_list import UISelectionList
 
+from bots import game_logic
+
 try:
     from pygame_gui.core.ui_element import UIElement
     from pygame_gui.elements import UIPanel
@@ -57,7 +59,9 @@ _user_reply_entry: UITextEntryBox | None = None
 _user_reply_send_button: UIButton | None = None
 
 
-def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model: str = "ministral-3:8b") -> pygame_gui.UIManager:
+def initialize_ui(
+    screen_size: tuple[int, int], message_log: Any, default_model: str | None = None
+) -> pygame_gui.UIManager:
     """Initialize pygame_gui manager and create the 4 UI windows."""
     global _ui_manager, _stats_window, _log_window, _speech_window, _input_window
     global _stats_text, _log_text, _speech_text, _prompt_text
@@ -80,7 +84,7 @@ def initialize_ui(screen_size: tuple[int, int], message_log: Any, default_model:
     ])
     
     # Create start menu FIRST so it's on top
-    _create_start_menu(screen_size, default_model)
+    _create_start_menu(screen_size, default_model or game_logic.OLLAMA_MODEL)
     
     # 1. Bot Stats Window (left-middle) - minimized by default
     stats_y = max(10, (screen_size[1] // 2) - 200)
@@ -197,7 +201,7 @@ def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None
         manager=_ui_manager,
         container=_start_window,
     )
-    _start_model_entry.set_text(default_model or "ministral-3:8b")
+    _start_model_entry.set_text(default_model or game_logic.OLLAMA_MODEL)
     _interactive_mode_checkbox = UIButton(
         relative_rect=pygame.Rect((20, 205), (390, 40)),
         text="Interactive mode, you can reply to Bot question.",
@@ -295,9 +299,9 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
     if event.type == UI_BUTTON_PRESSED:
 
         if _start_default_button and event.ui_element == _start_default_button:
-            model_name = "ministral-3:8b"
+            model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
-                model_name = _start_model_entry.get_text().strip() or "ministral-3:8b"
+                model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
             _close_start_menu()
             return {"action": "start_default", "interactive_mode": _interactive_mode_enabled, "model": model_name}
 
@@ -320,9 +324,9 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             prompt_text = ""
             if _custom_prompt_entry is not None:
                 prompt_text = _custom_prompt_entry.get_text().strip()
-            model_name = "ministral-3:8b"
+            model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
-                model_name = _start_model_entry.get_text().strip() or "ministral-3:8b"
+                model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()

@@ -14,6 +14,10 @@ HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
+
+
 OLLAMA_PLAY = os.getenv("OLLAMA_PLAY", "0") == "1"
 
 TILE_SIZE = 4
@@ -26,6 +30,7 @@ DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W
 
 BOT_RADIUS = 10
 BOT_SPEED = 220
+MOVE_MAX_TILES = 20
 HOURS_SOLAR_FLARE_EVERY = 50
 HOURS_TO_SOLAR_FLARE = HOURS_SOLAR_FLARE_EVERY
 ROCKS_REQUIRED_FOR_HABITAT = 2
@@ -54,16 +59,6 @@ TILE_DESCRIPTIONS = {
     "habitat": "A sealed habitat module.",
     "crate": "A mysterious red crate. It might contain energy cells.",
 }
-
-TILE_MAX_DISTANCE: dict[str, int] = {
-    "gravel": 40,
-    "sand": 30,
-    "water": 6,
-    "rocks": 20,
-    "habitat": 10,
-    "crate": 10,
-}
-
 
 @dataclass
 class Tile:
@@ -510,28 +505,9 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
     if curr_gy != target_y:
         dy = 1 if target_y > curr_gy else -1
 
-    start_tile = tile_matrix[start_gx][start_gy]
-    terrain_limit = TILE_MAX_DISTANCE.get(start_tile.type, 5)
-    
-    # Check if terrain is impassable
-    if terrain_limit <= 0:
-        msg = (
-            f"Cannot move — stuck on {start_tile.type} at ({start_gx}, {start_gy})! "
-            f"Terrain is impassable."
-        )
-        print(f"  [MoveTo] BLOCKED: {msg}")
-        return {
-            "ok": False,
-            "error": msg,
-            "energy": bot_energy,
-            "tile_x": start_gx,
-            "tile_y": start_gy,
-            "tile_type": start_tile.type,
-        }
-
     hours_taken = 0
     new_x, new_y = bot_target_x, bot_target_y
-    for _ in range(min(10, terrain_limit)):
+    for _ in range(MOVE_MAX_TILES):
         _consume_energy(1)
         next_x = new_x + dx * TILE_SIZE
         next_y = new_y + dy * TILE_SIZE
@@ -574,7 +550,7 @@ def MoveTo(target_x: int, target_y: int) -> dict[str, Any]:
         "target_tile_x": target_x,
         "target_tile_y": target_y,
         "hours_taken": hours_taken,
-        "terrain_limit": terrain_limit,
+        "move_limit": MOVE_MAX_TILES,
         "tile_x": grid_x,
         "tile_y": grid_y,
         "tile_type": landed.type,
