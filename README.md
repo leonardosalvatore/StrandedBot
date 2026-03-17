@@ -14,7 +14,7 @@
 
 ![Game screenshot](bots/resources/screenshot.jpg)
 
-[How should the robot run?](https://youtu.be/aBzuiMLokrk)
+[How should the robot run?](https://youtu.be/a0R7qwPZSJk)
 
 
 ## Commands
@@ -50,7 +50,7 @@ Change a different LLM model.
   - Tile/map data structures and procedural generation
   - Solar flare countdown system (20 hours between flares)
   - Habitat damage tracking (0-100% per habitat)
-  - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `OpenCrate`, `TakeAllFromCrate`, `CreateHabitat`,`Dig`)
+  - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `Dig`, `Create`)
   - Movement update loop and status helpers
   - Line-of-sight calculations for blocking terrain
 

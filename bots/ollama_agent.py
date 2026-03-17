@@ -1,7 +1,6 @@
 import json
 import os
 import queue
-import re
 import subprocess
 import threading
 import time
@@ -18,61 +17,9 @@ last_bot_speech = ""
 OLLAMA_LINUX_DOCS_URL = "https://docs.ollama.com/linux"
 
 
-    # Some models ignore native tool-calling and instead print a JSON snippet
-    # like {"name": "MoveTo", "arguments": {...}} in plain text. We scan
-    # fenced JSON blocks (and then full content) to recover those intents.
 def _coerce_tool_calls(msg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return structured tool calls from metadata or JSON content fallback."""
-    tool_calls = msg.get("tool_calls") or []
-    if tool_calls:
-        return tool_calls
-
-    content = (msg.get("content") or "").strip()
-    if not content:
-        return []
-
-    candidates: list[str] = []
-    fence_matches = re.findall(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", content, flags=re.DOTALL)
-    candidates.extend(fence_matches)
-    candidates.append(content)
-
-    parsed: Any = None
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-            break
-        except json.JSONDecodeError:
-            continue
-
-    if parsed is None:
-        return []
-
-    items = parsed if isinstance(parsed, list) else [parsed]
-    normalized: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-
-        if "function" in item and isinstance(item["function"], dict):
-            fn_name = item["function"].get("name", "")
-            fn_args = item["function"].get("arguments", {})
-        else:
-            fn_name = item.get("name", "")
-            fn_args = item.get("arguments", {})
-
-        if not isinstance(fn_name, str) or not fn_name.strip():
-            continue
-
-        normalized.append(
-            {
-                "function": {
-                    "name": fn_name.strip(),
-                    "arguments": fn_args if isinstance(fn_args, (dict, str)) else {},
-                }
-            }
-        )
-
-    return normalized
+    """Return only native tool calls from the API response."""
+    return msg.get("tool_calls") or []
 
 
 def get_ollama_settings() -> tuple[str, bool]:
@@ -108,7 +55,12 @@ def is_ollama_running() -> bool:
         return False
 
 
-def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[str, Any]]:
+def build_ollama_tools(
+    lookfar_distance: int,
+    habitat_rocks_required: int,
+    cable_rocks_required: int,
+    solar_panel_rocks_required: int,
+) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -158,43 +110,10 @@ def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[
                 "name": "LookFar",
                 "description": (
                     f"Wide-area scan: looks in a radius of {lookfar_distance} tiles around the bot and "
-                    "returns a list of notable features (rocks, habitat, crate) with "
+                    "returns a list of notable features (rocks, habitat, cable, solar_panel) with "
                     "their absolute tile coordinates (x, y), type, and distance. "
                     "Rock fields block line-of-sight, so features hidden behind rocks won't be visible. "
                     "Great for planning where to go next. Costs 1 energy."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "OpenCrate",
-                "description": (
-                    "Open the crate on the bot's current tile. "
-                    "The crate must be a 'crate' tile. Reveals how much energy is inside. "
-                    "Costs 1 energy."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TakeAllFromCrate",
-                "description": (
-                    "Take all energy from the opened crate on the bot's current tile. "
-                    "The crate must have been opened first with OpenCrate. "
-                    "Adds the crate's energy to the bot's energy. "
-                    "Costs 1 energy."
                 ),
                 "parameters": {
                     "type": "object",
@@ -210,8 +129,8 @@ def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[
                 "description": (
                     "Dig a rock from a 'rocks' tile on your current location. "
                     "Replaces the rocks tile with gravel and adds 1 rock to your inventory. "
-                    f"Collect {rocks_required} rocks to build 1 new habitat module. "
-                    "This can help you expand safe shelter and improve your survival chances. "
+                    f"Build costs: habitat={habitat_rocks_required}, cable={cable_rocks_required}, solar_panel={solar_panel_rocks_required}. "
+                    "Use it to gather materials for settlement construction. "
                     "Costs 1 energy."
                 ),
                 "parameters": {
@@ -224,18 +143,24 @@ def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[
         {
             "type": "function",
             "function": {
-                "name": "CreateHabitat",
+                "name": "Create",
                 "description": (
-                    "Create a new habitat on your current tile. "
-                    f"Requires at least {rocks_required} rocks in inventory. "
-                    f"Consumes exactly {rocks_required} rocks when successful. "
-                    "Cannot be used on water or crate tiles. "
+                    "Create a structure on the current tile. "
+                    f"Build costs: habitat={habitat_rocks_required} rocks, "
+                    f"cable={cable_rocks_required} rock, solar_panel={solar_panel_rocks_required} rocks. "
+                    "Cannot be used on water tiles. "
                     "Costs 1 energy."
                 ),
                 "parameters": {
                     "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "properties": {
+                        "tile_type": {
+                            "type": "string",
+                            "enum": ["habitat", "cable", "solar_panel"],
+                            "description": "Type of structure to create on the current tile.",
+                        }
+                    },
+                    "required": ["tile_type"],
                 },
             },
         },
@@ -243,23 +168,32 @@ def build_ollama_tools(lookfar_distance: int, rocks_required: int) -> list[dict[
 
 
 def build_base_prompt(game_logic: Any) -> str:
-    habitats_total = len(game_logic.habitat_damage)
-    rocks_required = game_logic.ROCKS_REQUIRED_FOR_HABITAT
+    habitat_rocks_required = game_logic.ROCKS_REQUIRED_FOR_HABITAT
+    cable_rocks_required = game_logic.ROCKS_REQUIRED_FOR_CABLE
+    solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
+    habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
     return (
-        "You are a robot explorer. Don't ask any questions it will cost you energy.\n"
-        f"The map is {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT} tiles. "
-        f"You run on battery. Solar flares occur every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours and DESTROY ALL HABITATS while draining 100 energy unless you are in a habitat at flare time. "
-        f"Build habitats by digging {rocks_required} rocks. "
-        f"- Dig: dig a rock from a rocks tile on your current location. Adds 1 rock to inventory. {rocks_required} rocks = 1 new buildable habitat.\n"
-        f"- CreateHabitat: build a habitat on your current tile using {rocks_required} rocks from inventory.\n"
-        "WARNING: Solar flares DESTROY all habitats and drain 100 energy if you are not sheltered! Keep your energy high by collecting crates. "
-        "Your MISSION is to survive by collecting crates for energy and managing resources wisely."
-        f"Here are the tools you can use to complete your MISSION.\n"
-        "- MoveTo: move toward a target tile, up to 20 tiles per call, over any tile type.\n"
-        "- LookClose: look at the tiles adjacent to your current location.\n"
-        "- LookFar: look at the tiles within your vision range.\n"
-        "- OpenCrate: open a crate on your current tile to see how much energy is inside.\n"
-        "- TakeAllFromCrate: take all energy from an opened crate (adds to your battery).\n"
+        "You are a robot explorer.\n"
+        "Goal: survive solar flares, then build an organized settlement.\n"
+        f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"
+        f"Solar flare every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours get in a habitat before the flare hits to survive.\n"
+        f"If your current habitat is connected to a solar panel through cables, you gain +{habitat_solar_charge} energy each hour.\n"
+        f"Build cost: habitat={habitat_rocks_required}, cable={cable_rocks_required}, solar_panel={solar_panel_rocks_required} rock(s).\n"
+        "Keep your energy always more the 100.\n"
+        "Build strategy:\n"
+        "1) Build a tiny habitat first (1 habitat tile) to survive early solar flares.\n"
+        "2) Power it immediately with cable + solar_panel so it becomes a safe charging shelter.\n"
+        "3) After survival is stable, build solar fields (clusters of solar_panel tiles).\n"
+        "4) Build groups of habitat tiles in a nice shape (compact block or symmetric pattern).\n"
+        "5) Connect each habitat group to a solar field using a straight line of 10 cable tiles when possible.\n"
+        "6) Expand settlement while preserving clean, intentional layout.\n"
+        "Tool-calling rules:\n"
+        "- Use the API tool calling interface for actions.\n"
+        "- Do not write tool calls in normal text.\n"
+        "- Do not emit JSON blobs or patterns like ToolName[ARGS]{...}. If native tool calling fails, say so plainly instead of faking a call.\n"
+        "- Only describe inventory, energy and map changes after the corresponding tool result confirms them.\n"
+        "- Never claim habitats, cables, solar panels, or charging unless STATUS or a tool result confirms them.\n"
+        "Available tools: MoveTo, LookClose, LookFar, Dig, Create(tile_type)."
         )
 
 
@@ -272,9 +206,22 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
 
     prompt_text = initial_prompt.strip() if isinstance(initial_prompt, str) and initial_prompt.strip() else build_base_prompt(game_logic)
     messages: list[dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": (
+                "Use native tool calls with the provided tools. "
+                "Do not print tool invocations as text, JSON, or ToolName[ARGS]{...} unless native tool calling fails. "
+                "Do not claim a state change until a tool result confirms it."
+            ),
+        },
         {"role": "user", "content": prompt_text},
     ]
-    tools = build_ollama_tools(game_logic.bot_lookfar_distance, game_logic.ROCKS_REQUIRED_FOR_HABITAT)
+    tools = build_ollama_tools(
+        game_logic.bot_lookfar_distance,
+        game_logic.ROCKS_REQUIRED_FOR_HABITAT,
+        game_logic.ROCKS_REQUIRED_FOR_CABLE,
+        game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL,
+    )
     tool_dispatch = game_logic.get_tool_dispatch()
 
     hour = 0
@@ -295,10 +242,30 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         game_logic.bot_state = "Thinking"
         game_logic._consume_energy(1)
 
+        gx, gy = game_logic._bot_grid_pos()
+        current_tile = game_logic.tile_matrix[gx][gy].type
+        rocks_count = sum(
+            1 for item in (getattr(game_logic, "bot_inventory", []) or [])
+            if isinstance(item, dict) and item.get("type") == "rock"
+        )
+        habitats_total = len(getattr(game_logic, "habitat_damage", {}))
+        charging_possible = (
+            current_tile == "habitat"
+            and game_logic._is_habitat_connected_to_solar(gx, gy)
+        )
+        status_grounding = (
+            "SYSTEM STATUS (truth source): "
+            f"hour={hour}, energy={game_logic.bot_energy}, position=({gx},{gy}), "
+            f"tile={current_tile}, rocks={rocks_count}, habitats={habitats_total}, "
+            f"hours_to_solar_flare={game_logic.HOURS_TO_SOLAR_FLARE}, "
+            f"charging_possible={charging_possible}. "
+            "Use these exact values. If you are unsure, ask to LookClose or LookFar rather than inventing state."
+        )
+
         try:
             response = ollama.chat(
                 model=model,
-                messages=messages,
+                messages=messages + [{"role": "user", "content": status_grounding}],
                 tools=tools,
             )
         except Exception as exc:
@@ -369,6 +336,13 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                     fn_args = {}
 
             print(f"  [Tool Call] {fn_name}({fn_args})")
+
+            # Fallback for old prompts/models that still call the legacy tool.
+            if fn_name == "CreateHabitat":
+                fn_name = "Create"
+                if not isinstance(fn_args, dict):
+                    fn_args = {}
+                fn_args.setdefault("tile_type", "habitat")
 
             game_logic.bot_state = game_logic.TOOL_STATE.get(fn_name, "Waiting")
 

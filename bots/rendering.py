@@ -49,6 +49,7 @@ _start_default_button: UIButton | None = None
 _start_custom_button: UIButton | None = None
 _interactive_mode_checkbox: UIButton | None = None
 _start_model_entry: UITextEntryBox | None = None
+_start_rocks_entry: UITextEntryBox | None = None
 _interactive_mode_enabled = True
 _custom_prompt_window: UIWindow | None = None
 _custom_prompt_entry: UITextEntryBox | None = None
@@ -113,16 +114,38 @@ def _draw_habitat_circle(surface: pygame.Surface, tile_rect: pygame.Rect, color:
     pygame.draw.circle(surface, mark_color, tile_rect.center, radius, 1)
 
 
-def _draw_crate_box(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
-    """Draw a small center square marker for crate tiles."""
+def _draw_cable_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """Draw a small cross-like cable marker."""
     if tile_rect.width < 6 or tile_rect.height < 6:
         return
 
-    mark_color = _darken_color(color, 0.55)
-    side = max(2, min(tile_rect.width, tile_rect.height) // 3)
-    left = tile_rect.centerx - side // 2
-    top = tile_rect.centery - side // 2
-    pygame.draw.rect(surface, mark_color, pygame.Rect(left, top, side, side), 1)
+    mark_color = _darken_color(color, 0.6)
+    cx, cy = tile_rect.center
+    arm = max(1, min(tile_rect.width, tile_rect.height) // 4)
+    pygame.draw.line(surface, mark_color, (cx - arm, cy), (cx + arm, cy), 1)
+    pygame.draw.line(surface, mark_color, (cx, cy - arm), (cx, cy + arm), 1)
+
+
+def _draw_solar_panel_grid(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """Draw a tiny 9x9 panel grid inside a solar panel tile."""
+    if tile_rect.width < 10 or tile_rect.height < 10:
+        return
+
+    grid_color = _darken_color(color, 0.5)
+    inset = 2
+    left = tile_rect.left + inset
+    top = tile_rect.top + inset
+    width = max(2, tile_rect.width - inset * 2)
+    height = max(2, tile_rect.height - inset * 2)
+
+    pygame.draw.rect(surface, grid_color, pygame.Rect(left, top, width, height), 1)
+
+    # 9x9 cells => 8 inner dividers each direction.
+    for i in range(1, 9):
+        x = left + int((i * width) / 9)
+        y = top + int((i * height) / 9)
+        pygame.draw.line(surface, grid_color, (x, top), (x, top + height - 1), 1)
+        pygame.draw.line(surface, grid_color, (left, y), (left + width - 1, y), 1)
 
 
 def initialize_ui(
@@ -147,6 +170,8 @@ def initialize_ui(
         {'name': 'noto_sans', 'point_size': 16, 'style': 'bold', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 18, 'style': 'regular', 'antialiased': '1'},
         {'name': 'noto_sans', 'point_size': 18, 'style': 'bold', 'antialiased': '1'},
+        # Try to load an emoji-capable font for the bot icon if available on system.
+        {'name': 'noto_color_emoji', 'point_size': 18, 'style': 'regular', 'antialiased': '1'},
     ])
     
     # Create start menu FIRST so it's on top
@@ -223,12 +248,12 @@ def initialize_ui(
 
 def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     global _start_window, _start_default_button, _start_custom_button
-    global _interactive_mode_checkbox, _start_model_entry, _interactive_mode_enabled
+    global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry, _interactive_mode_enabled
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
 
-    win_w, win_h = 600, 300
+    win_w, win_h = 600, 350
     x = (screen_size[0] - win_w) // 2
     y = (screen_size[1] - win_h) // 2
     _start_window = UIWindow(
@@ -268,8 +293,20 @@ def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None
         container=_start_window,
     )
     _start_model_entry.set_text(default_model or game_logic.OLLAMA_MODEL)
+    UILabel(
+        relative_rect=pygame.Rect((20, 190), (140, 30)),
+        text="ROCKS_AMOUNT:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_rocks_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((160, 190), (250, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_rocks_entry.set_text("100")
     _interactive_mode_checkbox = UIButton(
-        relative_rect=pygame.Rect((20, 205), (390, 40)),
+        relative_rect=pygame.Rect((20, 250), (390, 40)),
         text="Interactive mode, you can reply to Bot question.",
         manager=_ui_manager,
         container=_start_window,
@@ -335,7 +372,7 @@ def _close_custom_prompt_dialog() -> None:
 
 def _close_start_menu() -> None:
     global _start_window, _start_default_button, _start_custom_button
-    global _interactive_mode_checkbox, _start_model_entry
+    global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
@@ -343,6 +380,7 @@ def _close_start_menu() -> None:
     _start_custom_button = None
     _interactive_mode_checkbox = None
     _start_model_entry = None
+    _start_rocks_entry = None
     _close_custom_prompt_dialog()
 
 
@@ -361,6 +399,17 @@ def show_game_windows() -> None:
 
 def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
     global _interactive_mode_enabled
+
+    def _read_rocks_amount() -> int:
+        if _start_rocks_entry is None:
+            return 100
+        raw = _start_rocks_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 100
+        return max(1, value)
+
     # Use modern pygame_gui event.type instead of event.user_type
     if event.type == UI_BUTTON_PRESSED:
 
@@ -368,11 +417,17 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
+            rocks_amount = _read_rocks_amount()
             _close_start_menu()
-            return {"action": "start_default", "interactive_mode": _interactive_mode_enabled, "model": model_name}
+            return {
+                "action": "start_default",
+                "interactive_mode": _interactive_mode_enabled,
+                "model": model_name,
+                "rocks_amount": rocks_amount,
+            }
 
         if _start_custom_button and event.ui_element == _start_custom_button:
-            return {"action": "open_custom"}
+            return {"action": "open_custom", "rocks_amount": _read_rocks_amount()}
         
         if _interactive_mode_checkbox and event.ui_element == _interactive_mode_checkbox:
             _interactive_mode_enabled = not _interactive_mode_enabled
@@ -393,10 +448,17 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
+            rocks_amount = _read_rocks_amount()
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()
-            return {"action": "start_custom", "prompt": prompt_text, "interactive_mode": _interactive_mode_enabled, "model": model_name}
+            return {
+                "action": "start_custom",
+                "prompt": prompt_text,
+                "interactive_mode": _interactive_mode_enabled,
+                "model": model_name,
+                "rocks_amount": rocks_amount,
+            }
 
     return None
 
@@ -555,7 +617,9 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     # Update Bot Speech
     if _speech_text and game_logic.bot_last_speech:
         speech_safe = html.escape(game_logic.bot_last_speech).replace(chr(10), '<br>')
-        speech_html = f'<font size=5>🤖 {speech_safe}</font>'
+        speech_html = (
+            f'<font size=5><b>[BOT]</b> {speech_safe}</font>'
+        )
         global _last_speech_html
         if speech_html != _last_speech_html:
             _speech_text.html_text = speech_html
@@ -669,8 +733,10 @@ def draw_game(
                         _draw_sand_dots(target_surface, tile_rect, color, tx, ty, dot_count=3, seed_offset=0x85EBCA77)
                     elif t.type == "habitat" or t.type == "broken_habitat":
                         _draw_habitat_circle(target_surface, tile_rect, color)
-                    elif t.type == "crate":
-                        _draw_crate_box(target_surface, tile_rect, color)
+                    elif t.type == "cable":
+                        _draw_cable_marker(target_surface, tile_rect, color)
+                    elif t.type == "solar_panel":
+                        _draw_solar_panel_grid(target_surface, tile_rect, color)
 
     # Load spritesheet on first draw
     if _SPRITE_SHEET is None:
@@ -690,7 +756,7 @@ def draw_game(
             )
             return
 
-    # Draw bot sprite at screen center
+    # Draw bot sprite centered on the bot's current tile projection.
     col, row = _STATE_SPRITE_POS.get(game_logic.bot_state, (0, 0))
     src_rect = pygame.Rect(
         col * _SPRITE_SIZE,
@@ -703,9 +769,16 @@ def draw_game(
     draw_size = max(8, int(game_logic.BOT_RADIUS * 6 * (game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE) / 4))
     scaled = pygame.transform.smoothscale(sprite, (draw_size, draw_size))
 
-    dest_x = int(game_logic.WIDTH / 2) - draw_size // 2
-    dest_y = int(game_logic.HEIGHT / 2) - draw_size // 2
-    target_surface.blit(scaled, (dest_x, dest_y))
+    bot_center_world_x = game_logic.bot_x + (game_logic.TILE_SIZE / 2)
+    bot_center_world_y = game_logic.bot_y + (game_logic.TILE_SIZE / 2)
+    scale = game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE
+    bot_center_screen_x = ((bot_center_world_x - cam_world_x) * scale) + (game_logic.WIDTH / 2)
+    bot_center_screen_y = ((bot_center_world_y - cam_world_y) * scale) + (game_logic.HEIGHT / 2)
+
+    dest_rect = scaled.get_rect(
+        center=(int(round(bot_center_screen_x)), int(round(bot_center_screen_y)))
+    )
+    target_surface.blit(scaled, dest_rect)
     
     # Draw solar flare flash effect if active
     _draw_solar_flare_flash(target_surface, game_logic)

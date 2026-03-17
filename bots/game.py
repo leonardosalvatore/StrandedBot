@@ -29,12 +29,20 @@ _game_started = False
 _active_prompt = ""
 _world_initialized = False
 _event_watcher_installed = False
+_rocks_to_generate = 100
+
+
+def _parse_rocks_amount(value: object, default: int = 100) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _start_game() -> None:
-    global _game_started, _world_initialized
+    global _game_started, _world_initialized, _rocks_to_generate
     if not _world_initialized:
-        game_logic.initialize_world(use_fog=OLLAMA_PLAY)
+        game_logic.initialize_world(use_fog=OLLAMA_PLAY, rocks_target=_rocks_to_generate)
         _world_initialized = True
     _game_started = True
     # Show the game UI windows now that game has started
@@ -90,7 +98,7 @@ def on_mouse_down(pos, button):
 
 def on_mouse_up(pos, button):
     """Called by pgzero when mouse is released."""
-    global _game_started, _world_initialized, _active_prompt, OLLAMA_MODEL
+    global _game_started, _world_initialized, _active_prompt, OLLAMA_MODEL, _rocks_to_generate
     
     ui_manager = get_ui_manager()
     if ui_manager:
@@ -110,18 +118,30 @@ def on_mouse_up(pos, button):
                     if action == "start_default":
                         interactive_mode = startup_action.get("interactive_mode", True)
                         selected_model = str(startup_action.get("model", OLLAMA_MODEL)).strip()
+                        _rocks_to_generate = _parse_rocks_amount(
+                            startup_action.get("rocks_amount", _rocks_to_generate),
+                            _rocks_to_generate,
+                        )
                         if selected_model:
                             OLLAMA_MODEL = selected_model
                         _start_game_with_prompt("", interactive_mode)
                     elif action == "start_custom":
                         interactive_mode = startup_action.get("interactive_mode", True)
                         selected_model = str(startup_action.get("model", OLLAMA_MODEL)).strip()
+                        _rocks_to_generate = _parse_rocks_amount(
+                            startup_action.get("rocks_amount", _rocks_to_generate),
+                            _rocks_to_generate,
+                        )
                         if selected_model:
                             OLLAMA_MODEL = selected_model
                         _start_game_with_prompt(str(startup_action.get("prompt", "")).strip(), interactive_mode)
                     elif action == "open_custom":
+                        _rocks_to_generate = _parse_rocks_amount(
+                            startup_action.get("rocks_amount", _rocks_to_generate),
+                            _rocks_to_generate,
+                        )
                         if not _world_initialized:
-                            game_logic.initialize_world(use_fog=OLLAMA_PLAY)
+                            game_logic.initialize_world(use_fog=OLLAMA_PLAY, rocks_target=_rocks_to_generate)
                             _world_initialized = True
                         open_custom_prompt_dialog(build_base_prompt(game_logic))
                     elif action == "custom_prompt_empty":
