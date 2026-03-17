@@ -59,6 +59,72 @@ _user_reply_entry: UITextEntryBox | None = None
 _user_reply_send_button: UIButton | None = None
 
 
+def _darken_color(color: tuple[int, int, int], factor: float = 0.82) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, int(c * factor))) for c in color)
+
+
+def _draw_rock_triangle(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """Draw a tiny filled triangle marker for rock tiles."""
+    if tile_rect.width < 6 or tile_rect.height < 6:
+        return
+
+    mark_color = _darken_color(color, 0.62)
+    cx = tile_rect.centerx
+    top_y = tile_rect.top + 2
+    base_y = min(tile_rect.bottom - 2, top_y + max(2, tile_rect.height // 3))
+    half_base = max(1, tile_rect.width // 5)
+    points = [(cx, top_y), (cx - half_base, base_y), (cx + half_base, base_y)]
+    pygame.draw.polygon(surface, mark_color, points)
+
+
+def _draw_sand_dots(
+    surface: pygame.Surface,
+    tile_rect: pygame.Rect,
+    color: tuple[int, int, int],
+    tx: int,
+    ty: int,
+    dot_count: int = 3,
+    seed_offset: int = 0,
+) -> None:
+    """Draw tiny deterministic speckle dots for granular/liquid tiles."""
+    if tile_rect.width < 6 or tile_rect.height < 6:
+        return
+
+    mark_color = _darken_color(color, 0.7)
+    seed = ((tx * 73856093) ^ (ty * 19349663) ^ seed_offset) & 0xFFFFFFFF
+    inner_left = tile_rect.left + 2
+    inner_top = tile_rect.top + 2
+    inner_w = max(1, tile_rect.width - 4)
+    inner_h = max(1, tile_rect.height - 4)
+
+    for i in range(max(1, dot_count)):
+        x = inner_left + ((seed >> (i * 5)) % inner_w)
+        y = inner_top + ((seed >> (i * 7 + 2)) % inner_h)
+        pygame.draw.line(surface, mark_color, (x, y), (x, y), 1)
+
+
+def _draw_habitat_circle(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """Draw a small center circle marker for habitat tiles."""
+    if tile_rect.width < 6 or tile_rect.height < 6:
+        return
+
+    mark_color = _darken_color(color, 0.6)
+    radius = max(1, min(tile_rect.width, tile_rect.height) // 5)
+    pygame.draw.circle(surface, mark_color, tile_rect.center, radius, 1)
+
+
+def _draw_crate_box(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """Draw a small center square marker for crate tiles."""
+    if tile_rect.width < 6 or tile_rect.height < 6:
+        return
+
+    mark_color = _darken_color(color, 0.55)
+    side = max(2, min(tile_rect.width, tile_rect.height) // 3)
+    left = tile_rect.centerx - side // 2
+    top = tile_rect.centery - side // 2
+    pygame.draw.rect(surface, mark_color, pygame.Rect(left, top, side, side), 1)
+
+
 def initialize_ui(
     screen_size: tuple[int, int], message_log: Any, default_model: str | None = None
 ) -> pygame_gui.UIManager:
@@ -558,11 +624,53 @@ def draw_game(
                 )
                 # Only draw if within screen bounds
                 if 0 <= screen_x < game_logic.WIDTH and 0 <= screen_y < game_logic.HEIGHT:
+                    tile_rect = pygame.Rect(
+                        int(screen_x),
+                        int(screen_y),
+                        game_logic.DRAW_TILE_SIZE,
+                        game_logic.DRAW_TILE_SIZE,
+                    )
                     pygame.draw.rect(
                         target_surface,
                         color,
-                        pygame.Rect(int(screen_x), int(screen_y), game_logic.DRAW_TILE_SIZE, game_logic.DRAW_TILE_SIZE)
+                        tile_rect,
                     )
+
+                    # Add a subtle inner 1px corner accent to reduce flat-looking tiles.
+                    if tile_rect.width >= 4 and tile_rect.height >= 4:
+                        accent = _darken_color(color)
+                        left_x = tile_rect.left + 1
+                        bottom_y = tile_rect.bottom - 2
+                        horizontal_end_x = min(tile_rect.right - 2, left_x + max(1, tile_rect.width // 0.8))
+                        vertical_top_y = max(tile_rect.top + 1, bottom_y - max(1, tile_rect.height // 0.8))
+
+                        pygame.draw.line(
+                            target_surface,
+                            accent,
+                            (left_x, bottom_y),
+                            (horizontal_end_x, bottom_y),
+                            1,
+                        )
+                        pygame.draw.line(
+                            target_surface,
+                            accent,
+                            (left_x, vertical_top_y),
+                            (left_x, bottom_y),
+                            1,
+                        )
+
+                    if t.type == "rocks":
+                        _draw_rock_triangle(target_surface, tile_rect, color)
+                    elif t.type == "sand":
+                        _draw_sand_dots(target_surface, tile_rect, color, tx, ty)
+                    elif t.type == "gravel":
+                        _draw_sand_dots(target_surface, tile_rect, color, tx, ty, dot_count=5, seed_offset=0x9E3779B9)
+                    elif t.type == "water":
+                        _draw_sand_dots(target_surface, tile_rect, color, tx, ty, dot_count=3, seed_offset=0x85EBCA77)
+                    elif t.type == "habitat" or t.type == "broken_habitat":
+                        _draw_habitat_circle(target_surface, tile_rect, color)
+                    elif t.type == "crate":
+                        _draw_crate_box(target_surface, tile_rect, color)
 
     # Load spritesheet on first draw
     if _SPRITE_SHEET is None:
