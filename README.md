@@ -1,6 +1,6 @@
 A Ollama driven concept about a local running LLM trying to play a simple survival game about a robot stranded on a planet. 
 
-[Short video demo](https://youtu.be/1-en7oEn6TY)
+[Short video demo](https://youtu.be/esa-aX58YaI)
 ![Game screenshot](bots/resources/screenshot.jpg)
 
 
