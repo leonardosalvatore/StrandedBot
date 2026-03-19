@@ -114,8 +114,8 @@ def _draw_habitat_circle(surface: pygame.Surface, tile_rect: pygame.Rect, color:
     pygame.draw.circle(surface, mark_color, tile_rect.center, radius, 1)
 
 
-def _draw_cable_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
-    """Draw a small cross-like cable marker."""
+def _draw_battery_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """Draw a small cross-like battery marker."""
     if tile_rect.width < 6 or tile_rect.height < 6:
         return
 
@@ -733,8 +733,8 @@ def draw_game(
                         _draw_sand_dots(target_surface, tile_rect, color, tx, ty, dot_count=3, seed_offset=0x85EBCA77)
                     elif t.type == "habitat" or t.type == "broken_habitat":
                         _draw_habitat_circle(target_surface, tile_rect, color)
-                    elif t.type == "cable":
-                        _draw_cable_marker(target_surface, tile_rect, color)
+                    elif t.type == "battery":
+                        _draw_battery_marker(target_surface, tile_rect, color)
                     elif t.type == "solar_panel":
                         _draw_solar_panel_grid(target_surface, tile_rect, color)
 

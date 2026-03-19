@@ -58,7 +58,7 @@ def is_ollama_running() -> bool:
 def build_ollama_tools(
     lookfar_distance: int,
     habitat_rocks_required: int,
-    cable_rocks_required: int,
+    battery_rocks_required: int,
     solar_panel_rocks_required: int,
 ) -> list[dict[str, Any]]:
     return [
@@ -110,7 +110,7 @@ def build_ollama_tools(
                 "name": "LookFar",
                 "description": (
                     f"Wide-area scan: looks in a radius of {lookfar_distance} tiles around the bot and "
-                    "returns a list of notable features (rocks, habitat, cable, solar_panel) with "
+                    "returns a list of notable features (rocks, habitat, battery, solar_panel) with "
                     "their absolute tile coordinates (x, y), type, and distance. "
                     "Rock fields block line-of-sight, so features hidden behind rocks won't be visible. "
                     "Great for planning where to go next. Costs 1 energy."
@@ -129,7 +129,7 @@ def build_ollama_tools(
                 "description": (
                     "Dig a rock from a 'rocks' tile on your current location. "
                     "Replaces the rocks tile with gravel and adds 1 rock to your inventory. "
-                    f"Build costs: habitat={habitat_rocks_required}, cable={cable_rocks_required}, solar_panel={solar_panel_rocks_required}. "
+                    f"Build costs: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required}. "
                     "Use it to gather materials for settlement construction. "
                     "Costs 1 energy."
                 ),
@@ -145,9 +145,9 @@ def build_ollama_tools(
             "function": {
                 "name": "Create",
                 "description": (
-                    "Create a structure on the current tile. "
+                    "Create a structure on the current tile. You cannot build on habitat, battery, or solar_panel tiles. "
                     f"Build costs: habitat={habitat_rocks_required} rocks, "
-                    f"cable={cable_rocks_required} rock, solar_panel={solar_panel_rocks_required} rocks. "
+                    f"battery={battery_rocks_required} rock, solar_panel={solar_panel_rocks_required} rocks. "
                     "Cannot be used on water tiles. "
                     "Costs 1 energy."
                 ),
@@ -156,7 +156,7 @@ def build_ollama_tools(
                     "properties": {
                         "tile_type": {
                             "type": "string",
-                            "enum": ["habitat", "cable", "solar_panel"],
+                            "enum": ["habitat", "battery", "solar_panel"],
                             "description": "Type of structure to create on the current tile.",
                         }
                     },
@@ -169,30 +169,26 @@ def build_ollama_tools(
 
 def build_base_prompt(game_logic: Any) -> str:
     habitat_rocks_required = game_logic.ROCKS_REQUIRED_FOR_HABITAT
-    cable_rocks_required = game_logic.ROCKS_REQUIRED_FOR_CABLE
+    battery_rocks_required = game_logic.ROCKS_REQUIRED_FOR_BATTERY
     solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
     habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
     return (
-        "You are a robot explorer.\n"
-        "Goal: survive solar flares, then build an organized settlement.\n"
+        "You are a robot on a mission to prepare the biggest settlement for humans.\n"
         f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"
         f"Solar flare every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours get in a habitat before the flare hits to survive.\n"
-        f"If your current habitat is connected to a solar panel through cables, you gain +{habitat_solar_charge} energy each hour.\n"
-        f"Build cost: habitat={habitat_rocks_required}, cable={cable_rocks_required}, solar_panel={solar_panel_rocks_required} rock(s).\n"
+        f"If your current habitat is connected to a solar panel and a battery, you gain +{habitat_solar_charge} energy each hour.\n"
+        f"Build cost: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required} rock(s).\n"
         "Keep your energy always more the 100.\n"
-        "Build strategy:\n"
-        "1) Build a tiny habitat first (1 habitat tile) to survive early solar flares.\n"
-        "2) Power it immediately with cable + solar_panel so it becomes a safe charging shelter.\n"
-        "3) After survival is stable, build solar fields (clusters of solar_panel tiles).\n"
-        "4) Build groups of habitat tiles in a nice shape (compact block or symmetric pattern).\n"
-        "5) Connect each habitat group to a solar field using a straight line of 10 cable tiles when possible.\n"
-        "6) Expand settlement while preserving clean, intentional layout.\n"
+        "YOUR MISSION:\n"
+        "1) Grab rocks to gather materials for construction, 10 rocks to start. \n"
+        "2) Build Habitat and power it immediately with battery + solar_panel so it becomes a safe charging shelter. Use this to keep your energy above 200\n"
+        "3) After survival is stable, build a town with group of solar panels , group habitat and batteries, resembling a small settlement.\n"
         "Tool-calling rules:\n"
         "- Use the API tool calling interface for actions.\n"
         "- Do not write tool calls in normal text.\n"
         "- Do not emit JSON blobs or patterns like ToolName[ARGS]{...}. If native tool calling fails, say so plainly instead of faking a call.\n"
         "- Only describe inventory, energy and map changes after the corresponding tool result confirms them.\n"
-        "- Never claim habitats, cables, solar panels, or charging unless STATUS or a tool result confirms them.\n"
+        "- Never claim habitats, batteries, solar panels, or charging unless STATUS or a tool result confirms them.\n"
         "Available tools: MoveTo, LookClose, LookFar, Dig, Create(tile_type)."
         )
 
@@ -219,7 +215,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
     tools = build_ollama_tools(
         game_logic.bot_lookfar_distance,
         game_logic.ROCKS_REQUIRED_FOR_HABITAT,
-        game_logic.ROCKS_REQUIRED_FOR_CABLE,
+        game_logic.ROCKS_REQUIRED_FOR_BATTERY,
         game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL,
     )
     tool_dispatch = game_logic.get_tool_dispatch()

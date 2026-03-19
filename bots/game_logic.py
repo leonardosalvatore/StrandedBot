@@ -34,14 +34,14 @@ MOVE_MAX_TILES = 20
 HOURS_SOLAR_FLARE_EVERY = 50
 HOURS_TO_SOLAR_FLARE = HOURS_SOLAR_FLARE_EVERY
 ROCKS_REQUIRED_FOR_HABITAT = 1
-ROCKS_REQUIRED_FOR_CABLE = 1
+ROCKS_REQUIRED_FOR_BATTERY = 1
 ROCKS_REQUIRED_FOR_SOLAR_PANEL = 1
 HABITAT_SOLAR_CHARGE = 25
 
-BUILDABLE_TILE_TYPES = {"habitat", "cable", "solar_panel"}
+BUILDABLE_TILE_TYPES = {"habitat", "battery", "solar_panel"}
 BUILD_COSTS: dict[str, int] = {
     "habitat": ROCKS_REQUIRED_FOR_HABITAT,
-    "cable": ROCKS_REQUIRED_FOR_CABLE,
+    "battery": ROCKS_REQUIRED_FOR_BATTERY,
     "solar_panel": ROCKS_REQUIRED_FOR_SOLAR_PANEL,
 }
 
@@ -57,7 +57,7 @@ TILE_TYPES = {
     "water",
     "rocks",
     "habitat",
-    "cable",
+    "battery",
     "solar_panel",
 }
 TILE_COLORS = {
@@ -66,7 +66,7 @@ TILE_COLORS = {
     "water": (120, 210, 255),
     "rocks": (130, 130, 130),
     "habitat": (180, 255, 100),
-    "cable": (245, 215, 90),
+    "battery": (245, 215, 90),
     "solar_panel": (90, 150, 215),
     "broken_habitat": (40, 70, 40),
 }
@@ -77,7 +77,7 @@ TILE_DESCRIPTIONS = {
     "water": "Clear, shimmering water.",
     "rocks": "Jagged rocks and boulders.",
     "habitat": "A sealed habitat module.",
-    "cable": "Power cable segment connecting habitats and solar panels.",
+    "battery": "Battery segment connecting habitats and solar panels.",
     "solar_panel": "A solar panel array that powers the settlement.",
 }
 
@@ -440,7 +440,7 @@ def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
 
 
 def _is_habitat_connected_to_solar(hx: int, hy: int) -> bool:
-    """Check if a habitat tile is connected to any solar panel via cables."""
+    """Check if a habitat tile is connected to any solar panel via batteries."""
     if not (0 <= hx < GRID_WIDTH and 0 <= hy < GRID_HEIGHT):
         return False
     if tile_matrix[hx][hy].type != "habitat":
@@ -451,18 +451,18 @@ def _is_habitat_connected_to_solar(hx: int, hy: int) -> bool:
     i = 0
 
     while i < len(queue_nodes):
-        x, y, used_cable = queue_nodes[i]
+        x, y, used_battery = queue_nodes[i]
         i += 1
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             nx, ny = x + dx, y + dy
             if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
                 continue
             tile_type = tile_matrix[nx][ny].type
-            if tile_type == "solar_panel" and used_cable:
+            if tile_type == "solar_panel" and used_battery:
                 return True
-            if tile_type in {"cable", "habitat"}:
-                next_used_cable = used_cable or tile_type == "cable"
-                state = (nx, ny, next_used_cable)
+            if tile_type in {"battery", "habitat"}:
+                next_used_battery = used_battery or tile_type == "battery"
+                state = (nx, ny, next_used_battery)
                 if state in visited:
                     continue
                 visited.add(state)
@@ -483,7 +483,7 @@ def _apply_powered_habitat_charge() -> None:
     bot_state = "Charging"
     charging_animation_until = time.time() + 0.8
     print(
-        f"  [Power] Habitat at ({gx}, {gy}) is connected to solar panel via cables: "
+        f"  [Power] Habitat at ({gx}, {gy}) is connected to solar panel via battery: "
         f"+{HABITAT_SOLAR_CHARGE} energy ({before} -> {bot_energy})"
     )
 
@@ -820,12 +820,12 @@ def Create(tile_type: str) -> dict[str, Any]:
 
     current_tile = tile_matrix[gx][gy].type
 
-    if current_tile == tile_type:
-        msg = f"Tile ({gx}, {gy}) is already a {tile_type}."
+    if current_tile in BUILDABLE_TILE_TYPES:
+        msg = f"You cannot build here. The tile in ({gx}, {gy}) is a {current_tile}."
         print(f"  [Create] {msg}")
         return {"ok": False, "error": msg, "energy": bot_energy}
 
-    if current_tile in {"habitat", "cable", "solar_panel"}:
+    if current_tile in {"habitat", "battery", "solar_panel"}:
         msg = (
             f"Cannot build {tile_type} on existing {current_tile} at ({gx}, {gy}). "
             "Move to an empty terrain tile first."
