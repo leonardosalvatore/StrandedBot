@@ -44,6 +44,7 @@ BUILD_COSTS: dict[str, int] = {
     "battery": ROCKS_REQUIRED_FOR_BATTERY,
     "solar_panel": ROCKS_REQUIRED_FOR_SOLAR_PANEL,
 }
+POWER_NETWORK_TILE_TYPES = {"habitat", "battery", "solar_panel"}
 
 # Solar flare animation state
 solar_flare_animation_active = False
@@ -89,6 +90,7 @@ class Tile:
     color: tuple[int, int, int] = field(default=(80, 170, 80))
     description: str = field(default="Loose red gravel and dust.")
     fog: bool = field(default=True)
+    powered: bool = field(default=False)
 
 
 bot_start_energy = 300
@@ -123,7 +125,6 @@ TOOL_STATE: dict[str, str] = {
     "LookFar": "LookFar",
     "Dig": "LookClose",
     "Create": "LookClose",
-    "CreateHabitat": "LookClose",
 }
 
 
@@ -383,6 +384,7 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
             color=color,
             description=description,
             fog=existing_fog,
+            powered=False,
         )
 
     return {"ok": True, "x": x, "y": y, "type": type}
@@ -439,44 +441,69 @@ def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
     return True
 
 
+def _recompute_power_network() -> None:
+    """Recompute cached power state for all habitat/battery/solar tiles."""
+    with tiles_lock:
+        for x in range(GRID_WIDTH):
+            for y in range(GRID_HEIGHT):
+                if tile_matrix[x][y].type in POWER_NETWORK_TILE_TYPES:
+                    tile_matrix[x][y].powered = False
+
+        visited: set[tuple[int, int]] = set()
+        for x in range(GRID_WIDTH):
+            for y in range(GRID_HEIGHT):
+                if (x, y) in visited:
+                    continue
+                if tile_matrix[x][y].type not in POWER_NETWORK_TILE_TYPES:
+                    continue
+
+                component: list[tuple[int, int]] = []
+                queue_nodes: list[tuple[int, int]] = [(x, y)]
+                visited.add((x, y))
+                has_battery = False
+                has_solar_panel = False
+
+                i = 0
+                while i < len(queue_nodes):
+                    cx, cy = queue_nodes[i]
+                    i += 1
+                    component.append((cx, cy))
+                    tile_type = tile_matrix[cx][cy].type
+                    if tile_type == "battery":
+                        has_battery = True
+                    elif tile_type == "solar_panel":
+                        has_solar_panel = True
+
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = cx + dx, cy + dy
+                        if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
+                            continue
+                        if (nx, ny) in visited:
+                            continue
+                        if tile_matrix[nx][ny].type not in POWER_NETWORK_TILE_TYPES:
+                            continue
+                        visited.add((nx, ny))
+                        queue_nodes.append((nx, ny))
+
+                component_powered = has_battery and has_solar_panel
+                for px, py in component:
+                    tile_matrix[px][py].powered = component_powered
+
+
 def _is_habitat_connected_to_solar(hx: int, hy: int) -> bool:
-    """Check if a habitat tile is connected to any solar panel via batteries."""
+    """Return cached power status for a habitat tile."""
     if not (0 <= hx < GRID_WIDTH and 0 <= hy < GRID_HEIGHT):
         return False
-    if tile_matrix[hx][hy].type != "habitat":
-        return False
-
-    visited: set[tuple[int, int, bool]] = {(hx, hy, False)}
-    queue_nodes: list[tuple[int, int, bool]] = [(hx, hy, False)]
-    i = 0
-
-    while i < len(queue_nodes):
-        x, y, used_battery = queue_nodes[i]
-        i += 1
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nx, ny = x + dx, y + dy
-            if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
-                continue
-            tile_type = tile_matrix[nx][ny].type
-            if tile_type == "solar_panel" and used_battery:
-                return True
-            if tile_type in {"battery", "habitat"}:
-                next_used_battery = used_battery or tile_type == "battery"
-                state = (nx, ny, next_used_battery)
-                if state in visited:
-                    continue
-                visited.add(state)
-                queue_nodes.append(state)
-    return False
+    tile = tile_matrix[hx][hy]
+    return tile.type == "habitat" and tile.powered
 
 
 def _apply_powered_habitat_charge() -> None:
     """If bot is in a powered habitat, recharge it each hour tick."""
     global bot_energy, bot_state, charging_animation_until
     gx, gy = _bot_grid_pos()
-    if tile_matrix[gx][gy].type != "habitat":
-        return
-    if not _is_habitat_connected_to_solar(gx, gy):
+    tile = tile_matrix[gx][gy]
+    if tile.type != "habitat" or not tile.powered:
         return
     before = bot_energy
     bot_energy += HABITAT_SOLAR_CHARGE
@@ -610,6 +637,8 @@ def LookClose() -> dict[str, Any]:
                         if habitat:
                             tile_info["damage"] = habitat["damage"]
                             tile_info["repaired"] = habitat["repaired"]
+                    if t.type in POWER_NETWORK_TILE_TYPES:
+                        tile_info["powered"] = t.powered
                     surrounding.append(tile_info)
 
     print(
@@ -732,6 +761,8 @@ def LookFar() -> dict[str, Any]:
                 if habitat:
                     feature_info["damage"] = habitat["damage"]
                     feature_info["repaired"] = habitat["repaired"]
+            if tile_type in POWER_NETWORK_TILE_TYPES:
+                feature_info["powered"] = tile_matrix[tx][ty].powered
             features.append(feature_info)
 
     # Reveal fog for visible tiles in one short critical section.
@@ -869,6 +900,8 @@ def Create(tile_type: str) -> dict[str, Any]:
         tile_matrix[gx][gy].color = TILE_COLORS["habitat"]
     else:
         habitat_damage.pop((gx, gy), None)
+    if tile_type in POWER_NETWORK_TILE_TYPES:
+        _recompute_power_network()
 
     rocks_left = sum(1 for item in bot_inventory if item.get("type") == "rock")
     print(
@@ -887,11 +920,6 @@ def Create(tile_type: str) -> dict[str, Any]:
     }
 
 
-def CreateHabitat() -> dict[str, Any]:
-    """Backward-compatible alias for older prompts/tool calls."""
-    return Create("habitat")
-
-
 def get_tool_dispatch() -> dict[str, Any]:
     return {
         "MoveTo": MoveTo,
@@ -899,7 +927,6 @@ def get_tool_dispatch() -> dict[str, Any]:
         "LookFar": LookFar,
         "Dig": Dig,
         "Create": Create,
-        "CreateHabitat": CreateHabitat,
     }
 
 

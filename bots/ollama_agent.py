@@ -239,7 +239,8 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         game_logic._consume_energy(1)
 
         gx, gy = game_logic._bot_grid_pos()
-        current_tile = game_logic.tile_matrix[gx][gy].type
+        current_tile_obj = game_logic.tile_matrix[gx][gy]
+        current_tile = current_tile_obj.type
         rocks_count = sum(
             1 for item in (getattr(game_logic, "bot_inventory", []) or [])
             if isinstance(item, dict) and item.get("type") == "rock"
@@ -247,7 +248,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         habitats_total = len(getattr(game_logic, "habitat_damage", {}))
         charging_possible = (
             current_tile == "habitat"
-            and game_logic._is_habitat_connected_to_solar(gx, gy)
+            and bool(getattr(current_tile_obj, "powered", False))
         )
         status_grounding = (
             "SYSTEM STATUS (truth source): "
@@ -332,13 +333,6 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                     fn_args = {}
 
             print(f"  [Tool Call] {fn_name}({fn_args})")
-
-            # Fallback for old prompts/models that still call the legacy tool.
-            if fn_name == "CreateHabitat":
-                fn_name = "Create"
-                if not isinstance(fn_args, dict):
-                    fn_args = {}
-                fn_args.setdefault("tile_type", "habitat")
 
             game_logic.bot_state = game_logic.TOOL_STATE.get(fn_name, "Waiting")
 
