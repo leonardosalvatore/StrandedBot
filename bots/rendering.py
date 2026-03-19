@@ -1,12 +1,11 @@
 import importlib.resources
 import time
-import html
 from typing import Any
 
 import pygame
 import pygame_gui
 from pygame_gui import UI_BUTTON_PRESSED, UI_BUTTON_START_PRESS, UI_BUTTON_ON_HOVERED
-from pygame_gui.elements import UIButton, UILabel, UIWindow, UITextBox, UITextEntryBox
+from pygame_gui.elements import UIButton, UILabel, UIWindow, UITextEntryBox
 from pygame_gui.elements.ui_selection_list import UISelectionList
 
 from bots import game_logic
@@ -35,14 +34,14 @@ _stats_window: UIWindow | None = None
 _log_window: UIWindow | None = None
 _speech_window: UIWindow | None = None
 _input_window: UIWindow | None = None
-_stats_text: UITextBox | None = None
-_log_text: UITextBox | None = None
-_speech_text: UITextBox | None = None
-_prompt_text: UITextBox | None = None
-_last_log_html: str | None = None
-_last_speech_html: str | None = None
-_last_stats_html: str | None = None
-_last_prompt_html: str | None = None
+_stats_text: UITextEntryBox | None = None
+_log_text: UITextEntryBox | None = None
+_speech_text: UITextEntryBox | None = None
+_prompt_text: UITextEntryBox | None = None
+_last_log_text: str | None = None
+_last_speech_text: str | None = None
+_last_stats_text: str | None = None
+_last_prompt_text: str | None = None
 
 _start_window: UIWindow | None = None
 _start_default_button: UIButton | None = None
@@ -186,13 +185,13 @@ def initialize_ui(
         resizable=True,
         visible=False,  # Hidden until game starts
     )
-    _stats_text = UITextBox(
-        html_text="<font size=5>Initializing...</font>",
+    _stats_text = UITextEntryBox(
         relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_stats_window,
         anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
+    _stats_text.set_text("Initializing...")
     
     # 2. Message Log Window (left side) - minimized by default
     _log_window = UIWindow(
@@ -202,13 +201,13 @@ def initialize_ui(
         resizable=True,
         visible=False,  # Hidden until game starts
     )
-    _log_text = UITextBox(
-        html_text="<font size=4>Message log started...</font>",
+    _log_text = UITextEntryBox(
         relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_log_window,
         anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
+    _log_text.set_text("Message log started...")
     
     # 3. Bot Speech Window (top-right) - minimized by default
     _speech_window = UIWindow(
@@ -218,13 +217,13 @@ def initialize_ui(
         resizable=True,
         visible=False,  # Hidden until game starts
     )
-    _speech_text = UITextBox(
-        html_text="<font size=5>Waiting for bot to speak...</font>",
+    _speech_text = UITextEntryBox(
         relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_speech_window,
         anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
+    _speech_text.set_text("Waiting for bot to speak...")
     
     # 4. AI Prompt Window (below Bot Stats) - minimized by default
     _input_window = UIWindow(
@@ -234,13 +233,13 @@ def initialize_ui(
         resizable=True,
         visible=False,  # Hidden until game starts
     )
-    _prompt_text = UITextBox(
-        html_text="<font size=4><i>Prompt not selected yet.</i></font>",
+    _prompt_text = UITextEntryBox(
         relative_rect=pygame.Rect((0, 0), (-10, -10)),
         manager=_ui_manager,
         container=_input_window,
         anchors={'left': 'left', 'right': 'right', 'top': 'top', 'bottom': 'bottom'}
     )
+    _prompt_text.set_text("Prompt not selected yet.")
     
     message_log.start_capture()
     return _ui_manager
@@ -573,68 +572,57 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
             inventory_text = ", ".join(f"{item_type} x{count}" for item_type, count in sorted(counts.items()))
         else:
             inventory_text = "(empty)"
-        inventory_text = html.escape(inventory_text)
         
         hour_count = getattr(game_logic, "bot_hour_count", 0)
-        stats_html = (
-            "<font size=4>"
-            f"<b>hour:</b> {hour_count}<br>"
-            f"<b>Energy:</b> {game_logic.bot_energy}<br>"
-            f"<b>Position:</b> ({gx}, {gy})<br>"
-            f"<b>Tile:</b> {game_logic.tile_matrix[gx][gy].type}<br>"
-            f"<b>Target:</b> ({tgx}, {tgy})<br>"
-            f"<b>State:</b> {game_logic.bot_state}<br>"
-            f"<b>Solar Flare in:</b> {game_logic.HOURS_TO_SOLAR_FLARE}<br>"
-            f"<b>Habitats:</b> {habitats_total}<br>"
-            f"<b>Inventory:</b> {inventory_text}<br>"
-            f"<b>Model:</b> {ollama_model}"
-            "</font>"
+        stats_text = (
+            f"hour: {hour_count}\n"
+            f"Energy: {game_logic.bot_energy}\n"
+            f"Position: ({gx}, {gy})\n"
+            f"Tile: {game_logic.tile_matrix[gx][gy].type}\n"
+            f"Target: ({tgx}, {tgy})\n"
+            f"State: {game_logic.bot_state}\n"
+            f"Solar Flare in: {game_logic.HOURS_TO_SOLAR_FLARE}\n"
+            f"Habitats: {habitats_total}\n"
+            f"Inventory: {inventory_text}\n"
+            f"Model: {ollama_model}"
         )
-        global _last_stats_html
-        if stats_html != _last_stats_html:
-            _stats_text.html_text = stats_html
-            _stats_text.rebuild()
-            _last_stats_html = stats_html
+        global _last_stats_text
+        if stats_text != _last_stats_text:
+            _stats_text.set_text(stats_text)
+            _last_stats_text = stats_text
     
     # Update Message Log (last 50 messages)
     if _log_text:
         messages = message_log.get_messages(50)
-        log_html = "<font size=4>" + "<br>".join(messages[-50:]) + "</font>"
-        global _last_log_html
-        if log_html != _last_log_html:
+        log_text = "\n".join(messages[-50:])
+        global _last_log_text
+        if log_text != _last_log_text:
             should_follow = False
             if hasattr(_log_text, "scroll_bar") and _log_text.scroll_bar:
                 # Only auto-follow if user is already near the bottom.
                 should_follow = _log_text.scroll_bar.scroll_position >= (
                     _log_text.scroll_bar.bottom_limit - 5
                 )
-            _log_text.html_text = log_html
-            _log_text.rebuild()
-            _last_log_html = log_html
+            _log_text.set_text(log_text)
+            _last_log_text = log_text
             if should_follow and _log_text.scroll_bar:
                 _log_text.scroll_bar.scroll_position = _log_text.scroll_bar.bottom_limit
     
     # Update Bot Speech
     if _speech_text and game_logic.bot_last_speech:
-        speech_safe = html.escape(game_logic.bot_last_speech).replace(chr(10), '<br>')
-        speech_html = (
-            f'<font size=5><b>[BOT]</b> {speech_safe}</font>'
-        )
-        global _last_speech_html
-        if speech_html != _last_speech_html:
-            _speech_text.html_text = speech_html
-            _speech_text.rebuild()
-            _last_speech_html = speech_html
+        speech_text = f"[BOT] {game_logic.bot_last_speech}"
+        global _last_speech_text
+        if speech_text != _last_speech_text:
+            _speech_text.set_text(speech_text)
+            _last_speech_text = speech_text
 
     # Update AI Prompt panel
     if _prompt_text:
-        prompt_safe = html.escape(ai_prompt or "Prompt not selected yet.")
-        prompt_html = f"<font size=4>{prompt_safe.replace(chr(10), '<br>')}</font>"
-        global _last_prompt_html
-        if prompt_html != _last_prompt_html:
-            _prompt_text.html_text = prompt_html
-            _prompt_text.rebuild()
-            _last_prompt_html = prompt_html
+        prompt_text = ai_prompt or "Prompt not selected yet."
+        global _last_prompt_text
+        if prompt_text != _last_prompt_text:
+            _prompt_text.set_text(prompt_text)
+            _last_prompt_text = prompt_text
     
     # Check if bot is waiting for user reply
     check_for_question_and_show_dialog()
