@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -17,9 +18,95 @@ last_bot_speech = ""
 OLLAMA_LINUX_DOCS_URL = "https://docs.ollama.com/linux"
 
 
-def _coerce_tool_calls(msg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only native tool calls from the API response."""
-    return msg.get("tool_calls") or []
+def _normalize_text_tool_call_payload(
+    payload: Any,
+    allowed_tool_names: set[str],
+) -> list[dict[str, Any]]:
+    """Normalize common JSON tool-call payload shapes into Ollama-style tool calls."""
+    normalized: list[dict[str, Any]] = []
+
+    def _append_call(name: str, arguments: Any) -> None:
+        if not isinstance(name, str) or not name.strip():
+            return
+        tool_name = name.strip()
+        if tool_name not in allowed_tool_names:
+            return
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        normalized.append(
+            {
+                "function": {
+                    "name": tool_name,
+                    "arguments": arguments,
+                }
+            }
+        )
+
+    if isinstance(payload, list):
+        for item in payload:
+            normalized.extend(_normalize_text_tool_call_payload(item, allowed_tool_names))
+        return normalized
+
+    if not isinstance(payload, dict):
+        return normalized
+
+    if isinstance(payload.get("tool_calls"), list):
+        for tc in payload["tool_calls"]:
+            normalized.extend(_normalize_text_tool_call_payload(tc, allowed_tool_names))
+        return normalized
+
+    fn = payload.get("function")
+    if isinstance(fn, dict):
+        _append_call(fn.get("name", ""), fn.get("arguments", {}))
+        return normalized
+
+    if "name" in payload:
+        _append_call(payload.get("name", ""), payload.get("arguments", payload.get("args", {})))
+        return normalized
+
+    if "tool" in payload:
+        _append_call(payload.get("tool", ""), payload.get("arguments", payload.get("args", {})))
+
+    return normalized
+
+
+def _coerce_tool_calls(msg: dict[str, Any], allowed_tool_names: set[str]) -> list[dict[str, Any]]:
+    """Return native tool calls or parse JSON tool calls embedded in assistant text."""
+    native_calls = msg.get("tool_calls") or []
+    if native_calls:
+        return native_calls
+
+    content = (msg.get("content") or "").strip()
+    if not content:
+        return []
+
+    json_candidates: list[str] = []
+
+    # Prefer fenced JSON blocks first because many models emit tool calls this way.
+    fence_pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
+    for match in fence_pattern.findall(content):
+        candidate = match.strip()
+        if candidate:
+            json_candidates.append(candidate)
+
+    # If no fenced block exists, try the full message body as JSON.
+    if not json_candidates and (content.startswith("{") or content.startswith("[")):
+        json_candidates.append(content)
+
+    normalized_calls: list[dict[str, Any]] = []
+    for candidate in json_candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        normalized_calls.extend(_normalize_text_tool_call_payload(payload, allowed_tool_names))
+
+    return normalized_calls
 
 
 def get_ollama_settings() -> tuple[str, bool]:
@@ -172,25 +259,26 @@ def build_base_prompt(game_logic: Any) -> str:
     battery_rocks_required = game_logic.ROCKS_REQUIRED_FOR_BATTERY
     solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
     habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
-    return (
-        "You are a robot on a mission to prepare the biggest settlement for humans.\n"
-        f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"
-        f"Solar flare every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours get in a habitat before the flare hits to survive.\n"
-        f"If your current habitat is connected to a solar panel and a battery, you gain +{habitat_solar_charge} energy each hour.\n"
-        #f"Build cost: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required} rock(s).\n"
-        "Keep your energy always more the 200.\n"
-        "YOUR MISSION:\n"
-        "1) Grab rocks to gather materials for construction, 10 rocks to start. \n"
-        "2) Build Habitat and power it immediately with battery + solar_panel so it becomes a safe charging shelter. Use this to keep your energy above 200\n"
-        "3) After survival is stable, build a town with group of solar panels , group habitat and batteries, resembling a small settlement.\n"
-        "Tool-calling rules:\n"
-        "- Use the API tool calling interface for actions.\n"
-        "- Do not write tool calls in normal text.\n"
-        "- Do not emit JSON blobs or patterns like ToolName[ARGS]{...}. If native tool calling fails, say so plainly instead of faking a call.\n"
-        "- Only describe inventory, energy and map changes after the corresponding tool result confirms them.\n"
-        "- Never claim habitats, batteries, solar panels, or charging unless STATUS or a tool result confirms them.\n"
-        "Available tools: MoveTo, LookClose, LookFar, Dig, Create(tile_type)."
-        )
+    return ("Build a 4x4 square of habitats and one battery. Then attach to the square a line of 4 solar panels. Then lookfar and move 20 tiles and build a mucch bigger similar one. Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. " ).strip()
+    # return (
+    #     "You are a robot on a mission to prepare the biggest settlement for humans.\n"
+    #     f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"
+    #     f"Solar flare every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours get in a habitat before the flare hits to survive.\n"
+    #     f"If your current habitat is connected to a solar panel and a battery, you gain +{habitat_solar_charge} energy each hour.\n"
+    #     #f"Build cost: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required} rock(s).\n"
+    #     "Keep your energy always more the 200.\n"
+    #     "YOUR MISSION:\n"
+    #     "1) Grab rocks to gather materials for construction, 10 rocks to start. \n"
+    #     "2) Build Habitat and power it immediately with battery + solar_panel so it becomes a safe charging shelter. Use this to keep your energy above 200\n"
+    #     "3) After survival is stable, build a town with group of solar panels , group habitat and batteries, resembling a small settlement.\n"
+    #     "Tool-calling rules:\n"
+    #     "- Use the API tool calling interface for actions.\n"
+    #     "- Do not write tool calls in normal text.\n"
+    #     "- Do not emit JSON blobs or patterns like ToolName[ARGS]{...}. If native tool calling fails, say so plainly instead of faking a call.\n"
+    #     "- Only describe inventory, energy and map changes after the corresponding tool result confirms them.\n"
+    #     "- Never claim habitats, batteries, solar panels, or charging unless STATUS or a tool result confirms them.\n"
+    #     "Available tools: MoveTo, LookClose, LookFar, Dig, Create(tile_type)."
+    #     )
 
 
 def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None, interactive_mode: bool = False) -> None:
@@ -219,6 +307,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL,
     )
     tool_dispatch = game_logic.get_tool_dispatch()
+    allowed_tool_names = set(tool_dispatch.keys())
 
     hour = 0
     while True:
@@ -304,7 +393,9 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
 
         messages.append(msg)
 
-        tool_calls = _coerce_tool_calls(msg)
+        tool_calls = _coerce_tool_calls(msg, allowed_tool_names)
+        if tool_calls and not (msg.get("tool_calls") or []):
+            print(f"  [System] Parsed {len(tool_calls)} JSON tool call(s) from assistant text.")
         if not tool_calls and game_logic.bot_x == game_logic.bot_target_x and game_logic.bot_y == game_logic.bot_target_y:
             game_logic.bot_state = "Waiting"
             print("  [System] No tool call — nudging bot to continue exploring.")

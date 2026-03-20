@@ -114,15 +114,44 @@ def _draw_habitat_circle(surface: pygame.Surface, tile_rect: pygame.Rect, color:
 
 
 def _draw_battery_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
-    """Draw a small cross-like battery marker."""
+    """Draw a light gray battery marker with a tiny centered bolt."""
     if tile_rect.width < 6 or tile_rect.height < 6:
         return
 
-    mark_color = _darken_color(color, 0.6)
-    cx, cy = tile_rect.center
-    arm = max(1, min(tile_rect.width, tile_rect.height) // 4)
-    pygame.draw.line(surface, mark_color, (cx - arm, cy), (cx + arm, cy), 1)
-    pygame.draw.line(surface, mark_color, (cx, cy - arm), (cx, cy + arm), 1)
+    battery_color = (205, 210, 215)
+    bolt_color = (245, 248, 250)
+
+    body_width = max(4, tile_rect.width // 2)
+    body_height = max(4, tile_rect.height // 2)
+    body_rect = pygame.Rect(0, 0, body_width, body_height)
+    body_rect.center = tile_rect.center
+
+    terminal_width = max(1, body_rect.width // 4)
+    terminal_height = max(1, body_rect.height // 5)
+    terminal_rect = pygame.Rect(0, 0, terminal_width, terminal_height)
+    terminal_rect.midbottom = (body_rect.centerx, body_rect.top + 1)
+
+    pygame.draw.rect(surface, battery_color, body_rect, border_radius=1)
+    pygame.draw.rect(surface, _darken_color(battery_color, 0.8), body_rect, 1, border_radius=1)
+    pygame.draw.rect(surface, battery_color, terminal_rect)
+
+    inset_x = max(1, body_rect.width // 6)
+    inset_y = max(1, body_rect.height // 6)
+    bolt_top = body_rect.top + inset_y
+    bolt_bottom = body_rect.bottom - inset_y
+    bolt_left = body_rect.left + inset_x
+    bolt_right = body_rect.right - inset_x
+    bolt_mid_y = (bolt_top + bolt_bottom) // 2
+
+    bolt_points = [
+        (bolt_right - 1, bolt_top),
+        (bolt_left + 1, bolt_mid_y - 1),
+        (body_rect.centerx + 1, bolt_mid_y - 1),
+        (bolt_left, bolt_bottom - 1),
+        (bolt_right - 2, bolt_mid_y),
+        (body_rect.centerx, bolt_mid_y),
+    ]
+    pygame.draw.polygon(surface, bolt_color, bolt_points)
 
 
 def _draw_solar_panel_grid(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
