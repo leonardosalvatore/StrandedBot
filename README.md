@@ -1,86 +1,37 @@
-A Ollama driven concept about a local running LLM trying to play a simple survival game about a robot stranded on a planet. 
+Local LLM (Ollama) plays a small tile survival game: a robot gathers rocks, builds habitats, and survives solar flares.
 
-[Short video demo](https://youtu.be/esa-aX58YaI)
-![Game screenshot](bots/resources/screenshot.jpg)
+[Short video demo](https://youtu.be/esa-aX58YaI) · ![Screenshot](bots/resources/screenshot.jpg)
 
+## Run
 
-## Commands
-
-### Build/Install
 ```bash
 poetry install
-```
-
-### Run the Game
-```bash
 poetry run bots
 ```
 
-### Run with LLM (Autonomous Mode)
-```bash
-OLLAMA_PLAY=1 poetry run bots
-```
-When the program starts you can execute or edit a default prompt for the robot.
-Allow the program to intercept question from the robot and ask you whatever.
-Change a different LLM model.
+**LLM play:** `OLLAMA_PLAY=1 poetry run bots` — start screen lets you pick model, rock clusters, energy, starting inventory rocks, **hours between solar flares**, and interactive reply mode.
 
-![Game screenshot](bots/resources/startup.jpg)
+## Env
 
-### Core Files
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `OLLAMA_PLAY` | `0` | `1` = autonomous LLM |
+| `OLLAMA_MODEL` | see `game_logic.py` | Model if not overridden in UI |
+| `BOTS_SIM_HOUR_WALL_SEC` | `2` | Game hours advance while the model responds (`0` = off) |
 
-- **`bots/game.py`** - Thin Pygame Zero entrypoint/orchestrator (~60 lines):
-  - Initializes world and optional Ollama play thread
-  - Exposes `update(dt)` and `draw()` expected by `pgzero`
-  - Wires pygame_gui event handling
+## Layout
 
-- **`bots/game_logic.py`** - Core game state and mechanics (~790 lines):
-  - Tile/map data structures and procedural generation
-  - Solar flare countdown system (20 hours between flares)
-  - Habitat damage tracking (0-100% per habitat)
-  - Bot actions and tool functions (`MoveTo`, `LookClose`, `LookFar`, `Dig`, `Create`)
-  - Movement update loop and status helpers
-  - Line-of-sight calculations for blocking terrain
+| Module | Role |
+|--------|------|
+| `bots/game.py` | pgzero entry, pygame_gui events |
+| `bots/game_logic.py` | Map, tools (`MoveTo`, `Look*`, `Dig`, `Create`), flares, power |
+| `bots/rendering.py` | Viewport, UI windows, start menu |
+| `bots/ollama_agent.py` | Ollama chat + tool loop |
+| `bots/message_log.py` | `print` capture for log window |
+| `bots/cli.py` | `poetry run bots` → pgzero |
 
-- **`bots/rendering.py`** - Drawing/UI layer (~280 lines):
-  - Map viewport rendering with dynamic camera
-  - Bot sprite rendering
-  - Solar flare flash animation (10 flashes over 2 seconds)
-  - 4 draggable pygame_gui windows:
-    - **Bot Stats**: Energy, position, state, solar flare countdown, habitat repair progress
-    - **Message Log**: Captured print() output
-    - **Bot Speech**: Last LLM response
-    - **User Input**: (Placeholder for future direct steering)
-  - Font preloading to prevent warnings
-  - HTML text caching for performance
+**Stack:** Python 3.12+, pgzero, pygame-gui, `ollama` client.
 
-- **`bots/message_log.py`** - Print output capture (~50 lines):
-  - Intercepts sys.stdout/stderr to populate Message Log window
-  - Thread-safe deque buffer (max 1000 lines)
+## License
 
-- **`bots/ollama_agent.py`** - Ollama integration (~280 lines):
-  - Mission prompt: "Repair all damaged habitats!"
-  - Tool schema definitions for 6 bot actions
-  - Tool-calling loop with hour-based execution
-  - Model lifecycle helpers
-
-- **`bots/cli.py`** - CLI entry point:
-  - Launches game via `pgzrun`
-
-### Dependencies
-
-- **pgzero** - Pygame Zero game framework (v1.2.1+)
-- **ollama** - Python client for Ollama AI (v0.6.1+)
-- **pygame-gui** - GUI library for movable windows (v0.6.0+)
-- **Python** - 3.12+
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_MODEL` | `ministral-3:8b` | Ollama model for LLM play mode |
-| `OLLAMA_PLAY` | `0` | Enable LLM autonomous play (set to 1 to enable) |
-
-### License
-
-This project is licensed under the MIT License.
-See [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).

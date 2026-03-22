@@ -5,6 +5,7 @@ import re
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import ollama
@@ -16,8 +17,132 @@ user_reply_queue: queue.Queue = queue.Queue()
 waiting_for_user_reply = False
 _close_user_reply_dialog_requested = False
 USER_REPLY_TIMEOUT_SEC = 10.0
+_user_reply_deadline_lock = threading.Lock()
+_user_reply_deadline_monotonic: float | None = None
 last_bot_speech = ""
 OLLAMA_LINUX_DOCS_URL = "https://docs.ollama.com/linux"
+
+
+def _sim_hour_wall_interval_sec() -> float:
+    """Wall seconds per in-game hour while blocked on the LLM. 0 = disabled (old behavior)."""
+    raw = os.getenv("BOTS_SIM_HOUR_WALL_SEC", "2").strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 2.0
+
+
+def _wait_model_chat_with_sim_hours(
+    game_logic: Any,
+    chat_fn: Callable[[], Any],
+    wall_sec_per_game_hour: float,
+) -> tuple[Any | None, bool]:
+    """
+    Run chat_fn in a daemon thread. While waiting, advance bot_hour_count and solar-flare
+    logic every wall_sec_per_game_hour so time does not freeze during slow models.
+
+    Returns (response, destroyed). If destroyed, response may be None and the play loop should stop.
+    """
+    result: list[Any] = []
+    error: list[BaseException] = []
+    done = threading.Event()
+
+    def _target() -> None:
+        try:
+            result.append(chat_fn())
+        except BaseException as exc:
+            error.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_target, daemon=True).start()
+
+    if wall_sec_per_game_hour <= 0:
+        done.wait()
+        if error:
+            raise error[0]
+        return result[0], False
+
+    next_tick = time.monotonic() + wall_sec_per_game_hour
+    while not done.is_set():
+        now = time.monotonic()
+        if now >= next_tick:
+            game_logic.bot_hour_count += 1
+            if not game_logic._advance_solar_flare_hour(game_logic.bot_hour_count):
+                print(
+                    "  [System] Bot destroyed by solar flare while waiting for model (sim time advanced)."
+                )
+                return (result[0] if result else None), True
+            print(
+                f"  [SimTime] hour {game_logic.bot_hour_count} elapsed while waiting for model"
+            )
+            next_tick += wall_sec_per_game_hour
+            continue
+        done.wait(timeout=min(0.05, max(0.001, next_tick - now)))
+
+    if error:
+        raise error[0]
+    return result[0], False
+
+
+def _start_user_reply_deadline() -> None:
+    global _user_reply_deadline_monotonic
+    with _user_reply_deadline_lock:
+        _user_reply_deadline_monotonic = time.monotonic() + USER_REPLY_TIMEOUT_SEC
+
+
+def _clear_user_reply_deadline() -> None:
+    global _user_reply_deadline_monotonic
+    with _user_reply_deadline_lock:
+        _user_reply_deadline_monotonic = None
+
+
+def bump_user_reply_deadline() -> None:
+    """UI thread: full idle period restarts when the user types in the reply box."""
+    global _user_reply_deadline_monotonic
+    if not waiting_for_user_reply:
+        return
+    with _user_reply_deadline_lock:
+        if _user_reply_deadline_monotonic is None:
+            return
+        _user_reply_deadline_monotonic = time.monotonic() + USER_REPLY_TIMEOUT_SEC
+
+
+def get_user_reply_seconds_remaining() -> float | None:
+    """Seconds until auto-default reply, or None if not waiting."""
+    if not waiting_for_user_reply:
+        return None
+    with _user_reply_deadline_lock:
+        if _user_reply_deadline_monotonic is None:
+            return None
+        return max(0.0, _user_reply_deadline_monotonic - time.monotonic())
+
+
+def _wait_for_user_reply_interactive() -> tuple[str, bool]:
+    """Return (reply, timed_out). timed_out True means default \"Yes\" from idle expiry."""
+    global _close_user_reply_dialog_requested
+    _start_user_reply_deadline()
+    poll = 0.05
+    while True:
+        with _user_reply_deadline_lock:
+            deadline = _user_reply_deadline_monotonic
+            remaining = (
+                max(0.0, deadline - time.monotonic()) if deadline is not None else 0.0
+            )
+        if remaining <= 0.0:
+            print('  [System] No reply within timeout; defaulting to "Yes".')
+            _close_user_reply_dialog_requested = True
+            _clear_user_reply_deadline()
+            return "Yes", True
+        try:
+            msg = user_reply_queue.get(timeout=min(poll, max(0.01, remaining)))
+        except queue.Empty:
+            continue
+        _clear_user_reply_deadline()
+        text = msg if isinstance(msg, str) else str(msg)
+        return text, False
 
 
 def consume_user_reply_dialog_close_request() -> bool:
@@ -132,6 +257,7 @@ def submit_user_reply(reply: str) -> None:
     global waiting_for_user_reply
     user_reply_queue.put(reply)
     waiting_for_user_reply = False
+    _clear_user_reply_deadline()
 
 
 def is_waiting_for_reply() -> bool:
@@ -336,10 +462,16 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
     tool_dispatch = game_logic.get_tool_dispatch()
     allowed_tool_names = set(tool_dispatch.keys())
 
-    hour = 0
+    sim_wall = _sim_hour_wall_interval_sec()
+    if sim_wall > 0:
+        print(
+            f"  [SimTime] While the model responds, 1 game hour passes every {sim_wall}s wall time "
+            f"(set BOTS_SIM_HOUR_WALL_SEC=0 to disable).\n"
+        )
+
     while True:
-        hour += 1
-        game_logic.bot_hour_count = hour
+        game_logic.bot_hour_count += 1
+        hour = game_logic.bot_hour_count
         if not game_logic._advance_solar_flare_hour(hour):
             print("  [System] Bot destroyed by solar flare. Stopping play loop.")
             return
@@ -368,23 +500,33 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         )
         status_grounding = (
             "SYSTEM STATUS (truth source): "
-            f"hour={hour}, energy={game_logic.bot_energy}, position=({gx},{gy}), "
+            f"hour={game_logic.bot_hour_count}, energy={game_logic.bot_energy}, position=({gx},{gy}), "
             f"tile={current_tile}, rocks={rocks_count}, habitats={habitats_total}, "
             f"hours_to_solar_flare={game_logic.HOURS_TO_SOLAR_FLARE}, "
             f"charging_possible={charging_possible}. "
             "Use these exact values. If you are unsure, ask to LookClose or LookFar rather than inventing state."
         )
 
+        msgs_for_chat = messages + [{"role": "user", "content": status_grounding}]
+
         try:
-            response = ollama.chat(
-                model=model,
-                messages=messages + [{"role": "user", "content": status_grounding}],
-                tools=tools,
+            response, destroyed_waiting = _wait_model_chat_with_sim_hours(
+                game_logic,
+                lambda: ollama.chat(
+                    model=model,
+                    messages=msgs_for_chat,
+                    tools=tools,
+                ),
+                sim_wall,
             )
         except Exception as exc:
             print(f"  [Ollama] Error: {exc}")
             time.sleep(5)
             continue
+
+        if destroyed_waiting:
+            print("  [System] Stopping play loop (simulation ended during model wait).")
+            return
 
         if isinstance(response, dict):
             msg = response.get("message", {})
@@ -408,15 +550,10 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                 waiting_for_user_reply = True
                 print(
                     f"  [System] Detected question - waiting for user reply "
-                    f"({int(USER_REPLY_TIMEOUT_SEC)}s timeout, then default \"Yes\")..."
+                    f"({int(USER_REPLY_TIMEOUT_SEC)}s idle, then default \"Yes\"; typing resets the timer)..."
                 )
-                try:
-                    user_reply = user_reply_queue.get(timeout=USER_REPLY_TIMEOUT_SEC)
-                except queue.Empty:
-                    user_reply = "Yes"
-                    print('  [System] No reply within timeout; defaulting to "Yes".')
-                    _close_user_reply_dialog_requested = True
-                else:
+                user_reply, reply_timed_out = _wait_for_user_reply_interactive()
+                if not reply_timed_out:
                     print(f"  [User Reply] {user_reply}")
                 waiting_for_user_reply = False
                 messages.append(msg)

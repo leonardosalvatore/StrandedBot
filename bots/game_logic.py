@@ -13,8 +13,8 @@ PANEL_HEIGHT = 500
 HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
 
 
@@ -31,7 +31,7 @@ DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W
 BOT_RADIUS = 10
 BOT_SPEED = 220
 MOVE_MAX_TILES = 20
-HOURS_SOLAR_FLARE_EVERY = 50
+HOURS_SOLAR_FLARE_EVERY = 200
 HOURS_TO_SOLAR_FLARE = HOURS_SOLAR_FLARE_EVERY
 ROCKS_REQUIRED_FOR_HABITAT = 1
 ROCKS_REQUIRED_FOR_BATTERY = 1
@@ -51,6 +51,16 @@ solar_flare_animation_active = False
 solar_flare_animation_start_time = 0.0
 solar_flare_last_hour = -1
 charging_animation_until = 0.0
+
+
+def apply_solar_flare_interval_hours(hours: int) -> None:
+    """Set hours between solar flares and reset countdown (e.g. from start menu)."""
+    global HOURS_SOLAR_FLARE_EVERY, HOURS_TO_SOLAR_FLARE, solar_flare_last_hour
+    h = max(1, int(hours))
+    HOURS_SOLAR_FLARE_EVERY = h
+    HOURS_TO_SOLAR_FLARE = h
+    solar_flare_last_hour = -1
+
 
 TILE_TYPES = {
     "gravel",

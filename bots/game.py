@@ -7,6 +7,7 @@ from bots import game_logic
 from bots.message_log import message_log
 from bots.ollama_agent import build_base_prompt, start_ollama_play, stop_ollama_model, submit_user_reply
 from bots.rendering import (
+    bump_user_reply_deadline_if_waiting,
     draw_game,
     get_ui_manager,
     handle_startup_ui_event,
@@ -128,6 +129,9 @@ def on_mouse_up(pos, button):
                         game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.bot_start_energy)))
                         inv_rocks = max(0, int(startup_action.get("inventory_rocks", 0)))
                         game_logic.bot_inventory = [{"type": "rock"}] * inv_rocks
+                        game_logic.apply_solar_flare_interval_hours(
+                            int(startup_action.get("hours_solar_flare_every", game_logic.HOURS_SOLAR_FLARE_EVERY))
+                        )
                         _start_game_with_prompt("", interactive_mode)
                     elif action == "start_custom":
                         interactive_mode = startup_action.get("interactive_mode", True)
@@ -141,6 +145,9 @@ def on_mouse_up(pos, button):
                         game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.bot_start_energy)))
                         inv_rocks = max(0, int(startup_action.get("inventory_rocks", 0)))
                         game_logic.bot_inventory = [{"type": "rock"}] * inv_rocks
+                        game_logic.apply_solar_flare_interval_hours(
+                            int(startup_action.get("hours_solar_flare_every", game_logic.HOURS_SOLAR_FLARE_EVERY))
+                        )
                         _start_game_with_prompt(str(startup_action.get("prompt", "")).strip(), interactive_mode)
                     elif action == "open_custom":
                         _rocks_to_generate = _parse_rocks_amount(
@@ -192,8 +199,8 @@ def on_key_down(key, mod, unicode=""):
                 sync_ui_to_screen(display_surface.get_size())
         return
 
-    # Handle Enter/Shift-Enter in reply dialog
     if _game_started:
+        bump_user_reply_deadline_if_waiting()
         key_event = pygame.event.Event(
             pygame.KEYDOWN,
             {"key": key, "mod": mod, "unicode": unicode}
@@ -204,7 +211,7 @@ def on_key_down(key, mod, unicode=""):
             if reply_text:
                 submit_user_reply(reply_text)
                 return  # Don't pass the Enter key to UI if we handled it
-    
+
     ui_manager = get_ui_manager()
     if not ui_manager:
         return
@@ -251,6 +258,9 @@ def on_key_up(key, mod):
 
 def on_text_input(text):
     """Forward text input to pygame_gui for text boxes."""
+    if _game_started:
+        bump_user_reply_deadline_if_waiting()
+
     ui_manager = get_ui_manager()
     if not ui_manager:
         return

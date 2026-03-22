@@ -1,4 +1,5 @@
 import importlib.resources
+import math
 import time
 from typing import Any
 
@@ -51,6 +52,7 @@ _start_model_entry: UITextEntryBox | None = None
 _start_rocks_entry: UITextEntryBox | None = None
 _start_energy_entry: UITextEntryBox | None = None
 _start_inventory_entry: UITextEntryBox | None = None
+_start_solar_flare_entry: UITextEntryBox | None = None
 _interactive_mode_enabled = True
 _custom_prompt_window: UIWindow | None = None
 _custom_prompt_entry: UITextEntryBox | None = None
@@ -59,6 +61,7 @@ _custom_prompt_cancel_button: UIButton | None = None
 _user_reply_window: UIWindow | None = None
 _user_reply_entry: UITextEntryBox | None = None
 _user_reply_send_button: UIButton | None = None
+_last_user_reply_window_title: str | None = None
 
 
 def _darken_color(color: tuple[int, int, int], factor: float = 0.82) -> tuple[int, int, int]:
@@ -279,12 +282,12 @@ def initialize_ui(
 def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     global _start_window, _start_default_button, _start_custom_button
     global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry, _interactive_mode_enabled
-    global _start_energy_entry, _start_inventory_entry
+    global _start_energy_entry, _start_inventory_entry, _start_solar_flare_entry
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
 
-    win_w, win_h = 600, 420
+    win_w, win_h = 600, 460
     x = (screen_size[0] - win_w) // 2
     y = (screen_size[1] - win_h) // 2
     _start_window = UIWindow(
@@ -360,8 +363,20 @@ def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None
         container=_start_window,
     )
     _start_inventory_entry.set_text("20")
+    UILabel(
+        relative_rect=pygame.Rect((20, 310), (230, 30)),
+        text="Hours between solar flares:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_solar_flare_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((250, 310), (160, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_solar_flare_entry.set_text(str(game_logic.HOURS_SOLAR_FLARE_EVERY))
     _interactive_mode_checkbox = UIButton(
-        relative_rect=pygame.Rect((20, 315), (390, 40)),
+        relative_rect=pygame.Rect((20, 355), (390, 40)),
         text="Interactive mode, you can reply to Bot question.",
         manager=_ui_manager,
         container=_start_window,
@@ -428,7 +443,7 @@ def _close_custom_prompt_dialog() -> None:
 def _close_start_menu() -> None:
     global _start_window, _start_default_button, _start_custom_button
     global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry
-    global _start_energy_entry, _start_inventory_entry
+    global _start_energy_entry, _start_inventory_entry, _start_solar_flare_entry
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
@@ -439,6 +454,7 @@ def _close_start_menu() -> None:
     _start_rocks_entry = None
     _start_energy_entry = None
     _start_inventory_entry = None
+    _start_solar_flare_entry = None
     _close_custom_prompt_dialog()
 
 
@@ -488,6 +504,17 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             return 20
         return max(0, value)
 
+    def _read_hours_solar_flare_every() -> int:
+        default = game_logic.HOURS_SOLAR_FLARE_EVERY
+        if _start_solar_flare_entry is None:
+            return default
+        raw = _start_solar_flare_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(1, value)
+
     # Use modern pygame_gui event.type instead of event.user_type
     if event.type == UI_BUTTON_PRESSED:
 
@@ -498,6 +525,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             rocks_amount = _read_rocks_amount()
             energy = _read_energy()
             inventory_rocks = _read_inventory_rocks()
+            hours_solar_flare_every = _read_hours_solar_flare_every()
             _close_start_menu()
             return {
                 "action": "start_default",
@@ -506,6 +534,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
                 "rocks_amount": rocks_amount,
                 "energy": energy,
                 "inventory_rocks": inventory_rocks,
+                "hours_solar_flare_every": hours_solar_flare_every,
             }
 
         if _start_custom_button and event.ui_element == _start_custom_button:
@@ -533,6 +562,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             rocks_amount = _read_rocks_amount()
             energy = _read_energy()
             inventory_rocks = _read_inventory_rocks()
+            hours_solar_flare_every = _read_hours_solar_flare_every()
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()
@@ -544,6 +574,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
                 "rocks_amount": rocks_amount,
                 "energy": energy,
                 "inventory_rocks": inventory_rocks,
+                "hours_solar_flare_every": hours_solar_flare_every,
             }
 
     return None
@@ -588,13 +619,45 @@ def open_user_reply_dialog() -> None:
 
 def close_user_reply_dialog() -> None:
     """Close the user reply dialog window."""
-    global _user_reply_window, _user_reply_entry, _user_reply_send_button
+    global _user_reply_window, _user_reply_entry, _user_reply_send_button, _last_user_reply_window_title
     if _user_reply_window is not None:
         _user_reply_window.kill()
     _user_reply_window = None
     _user_reply_entry = None
     _user_reply_send_button = None
+    _last_user_reply_window_title = None
     pygame.key.stop_text_input()
+
+
+def bump_user_reply_deadline_if_waiting() -> None:
+    """Call on keyboard/text input so idle auto-reply timer restarts while the reply window is open."""
+    from bots import ollama_agent
+
+    if _user_reply_window is None:
+        return
+    if ollama_agent.is_waiting_for_reply():
+        ollama_agent.bump_user_reply_deadline()
+
+
+def _sync_user_reply_window_title() -> None:
+    """Show countdown in the reply window title bar; typing resets the underlying deadline."""
+    global _last_user_reply_window_title
+    from bots import ollama_agent
+
+    if _user_reply_window is None:
+        _last_user_reply_window_title = None
+        return
+    remaining = ollama_agent.get_user_reply_seconds_remaining()
+    if remaining is None:
+        return
+    secs = max(0, int(math.ceil(remaining)))
+    max_idle = int(ollama_agent.USER_REPLY_TIMEOUT_SEC)
+    title = (
+        f"Bot is waiting — {secs}s / {max_idle}s idle (typing resets)"
+    )
+    if title != _last_user_reply_window_title:
+        _user_reply_window.set_display_title(title)
+        _last_user_reply_window_title = title
 
 
 def handle_user_reply_event(event: pygame.event.Event) -> dict[str, Any] | None:
@@ -716,6 +779,7 @@ def update_ui_panels(game_logic: Any, ollama_model: str, message_log: Any, ai_pr
     
     # Check if bot is waiting for user reply
     check_for_question_and_show_dialog()
+    _sync_user_reply_window_title()
 
 
 def draw_game(
