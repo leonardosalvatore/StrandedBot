@@ -1,6 +1,7 @@
 import atexit
 
 import pygame
+from pygame_gui import UI_BUTTON_PRESSED
 
 from bots import game_logic
 from bots.message_log import message_log
@@ -105,10 +106,10 @@ def on_mouse_up(pos, button):
         # Create pygame event and let pygame_gui process it  
         mouse_event = pygame.event.Event(pygame.MOUSEBUTTONUP, {'pos': pos, 'button': button})
         ui_manager.process_events(mouse_event)
-        
-        # After pygame_gui processes the click, check for button events it generated
-        # We need to check the event queue for any UI events pygame_gui created
-        for event in pygame.event.get():
+
+        # Only dequeue pygame_gui button events so we do not drain the whole queue
+        # (other events must remain for pgzero / pygame).
+        for event in pygame.event.get(UI_BUTTON_PRESSED):
             ui_manager.process_events(event)
             
             if not _game_started:
@@ -124,6 +125,9 @@ def on_mouse_up(pos, button):
                         )
                         if selected_model:
                             OLLAMA_MODEL = selected_model
+                        game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.bot_start_energy)))
+                        inv_rocks = max(0, int(startup_action.get("inventory_rocks", 0)))
+                        game_logic.bot_inventory = [{"type": "rock"}] * inv_rocks
                         _start_game_with_prompt("", interactive_mode)
                     elif action == "start_custom":
                         interactive_mode = startup_action.get("interactive_mode", True)
@@ -134,6 +138,9 @@ def on_mouse_up(pos, button):
                         )
                         if selected_model:
                             OLLAMA_MODEL = selected_model
+                        game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.bot_start_energy)))
+                        inv_rocks = max(0, int(startup_action.get("inventory_rocks", 0)))
+                        game_logic.bot_inventory = [{"type": "rock"}] * inv_rocks
                         _start_game_with_prompt(str(startup_action.get("prompt", "")).strip(), interactive_mode)
                     elif action == "open_custom":
                         _rocks_to_generate = _parse_rocks_amount(

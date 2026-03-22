@@ -933,10 +933,20 @@ def get_tool_dispatch() -> dict[str, Any]:
 def print_hour_status() -> None:
     gx, gy = _bot_grid_pos()
     habitats_total = len(habitat_damage)
+
+    if bot_inventory:
+        counts: dict[str, int] = {}
+        for item in bot_inventory:
+            item_type = str(item.get("type", "unknown")) if isinstance(item, dict) else "unknown"
+            counts[item_type] = counts.get(item_type, 0) + 1
+        inventory_summary = ", ".join(f"{item_type} x{count}" for item_type, count in sorted(counts.items()))
+    else:
+        inventory_summary = "(empty)"
+
     print("\n  === STATUS ===")
     print(f"  Energy: {bot_energy}  |  Position: tile ({gx}, {gy})  |  Solar flare in: {HOURS_TO_SOLAR_FLARE} hours")
     print(f"  Habitats existing: {habitats_total}")
-    print(f"  Inventory: {bot_inventory if bot_inventory else '(empty)'}")
+    print(f"  Inventory: {inventory_summary}")
     print("  Surroundings:")
     with tiles_lock:
         for dy in range(-1, 2):

@@ -14,8 +14,19 @@ from bots import game_logic
 # Interactive mode state
 user_reply_queue: queue.Queue = queue.Queue()
 waiting_for_user_reply = False
+_close_user_reply_dialog_requested = False
+USER_REPLY_TIMEOUT_SEC = 10.0
 last_bot_speech = ""
 OLLAMA_LINUX_DOCS_URL = "https://docs.ollama.com/linux"
+
+
+def consume_user_reply_dialog_close_request() -> bool:
+    """True once after a reply timeout so the UI thread can close the dialog."""
+    global _close_user_reply_dialog_requested
+    if not _close_user_reply_dialog_requested:
+        return False
+    _close_user_reply_dialog_requested = False
+    return True
 
 
 def _normalize_text_tool_call_payload(
@@ -148,13 +159,16 @@ def build_ollama_tools(
     battery_rocks_required: int,
     solar_panel_rocks_required: int,
 ) -> list[dict[str, Any]]:
+    max_tx = game_logic.GRID_WIDTH - 1
+    max_ty = game_logic.GRID_HEIGHT - 1
     return [
         {
             "type": "function",
             "function": {
                 "name": "MoveTo",
                 "description": (
-                    "Move the bot toward a target tile. Specify absolute tile coordinates (x, y). "
+                    "Move the bot toward a target tile. Specify absolute tile indices (x, y) on the "
+                    f"world grid ({game_logic.GRID_WIDTH} tiles wide × {game_logic.GRID_HEIGHT} tiles tall). "
                     "The bot can move over any tile type. "
                     "The bot will move up to 20 tiles per call. "
                     "Costs 1 energy per tile of movement."
@@ -164,11 +178,15 @@ def build_ollama_tools(
                     "properties": {
                         "target_x": {
                             "type": "integer",
-                            "description": "Target tile X coordinate (0 to 99).",
+                            "minimum": 0,
+                            "maximum": max_tx,
+                            "description": f"Target tile X index from 0 to {max_tx} (inclusive).",
                         },
                         "target_y": {
                             "type": "integer",
-                            "description": "Target tile Y coordinate (0 to 79).",
+                            "minimum": 0,
+                            "maximum": max_ty,
+                            "description": f"Target tile Y index from 0 to {max_ty} (inclusive).",
                         },
                     },
                     "required": ["target_x", "target_y"],
@@ -198,7 +216,8 @@ def build_ollama_tools(
                 "description": (
                     f"Wide-area scan: looks in a radius of {lookfar_distance} tiles around the bot and "
                     "returns a list of notable features (rocks, habitat, battery, solar_panel) with "
-                    "their absolute tile coordinates (x, y), type, and distance. "
+                    f"their absolute tile coordinates (x, y) on the same grid as MoveTo "
+                    f"(0–{game_logic.GRID_WIDTH - 1} by 0–{game_logic.GRID_HEIGHT - 1}), type, and distance. "
                     "Rock fields block line-of-sight, so features hidden behind rocks won't be visible. "
                     "Great for planning where to go next. Costs 1 energy."
                 ),
@@ -215,10 +234,12 @@ def build_ollama_tools(
                 "name": "Dig",
                 "description": (
                     "Dig a rock from a 'rocks' tile on your current location. "
-                    "Replaces the rocks tile with gravel and adds 1 rock to your inventory. "
+                    "Each tool call removes at most one rock: the tile becomes gravel, so you cannot Dig again on the same tile—"
+                    "MoveTo another 'rocks' tile to dig more. "
+                    "To gather N rocks, issue N separate Dig calls (from valid rocks tiles), not one call with a count. "
+                    "Adds 1 rock to inventory per successful Dig. "
                     f"Build costs: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required}. "
-                    "Use it to gather materials for settlement construction. "
-                    "Costs 1 energy."
+                    "Costs 1 energy per Dig call."
                 ),
                 "parameters": {
                     "type": "object",
@@ -259,7 +280,12 @@ def build_base_prompt(game_logic: Any) -> str:
     battery_rocks_required = game_logic.ROCKS_REQUIRED_FOR_BATTERY
     solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
     habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
-    return ("Build a 4x4 square of habitats and one battery. Then attach to the square a line of 4 solar panels. Then lookfar and move 20 tiles and build a mucch bigger similar one. Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. " ).strip()
+    return ("YOUR MISSION IS:\n"
+            "Build a 4x4 square of habitats and 3 batteries. Then attach to the square a line of 4 solar panels. \n"
+            "Then lookfar and move 20 tiles and build a much bigger habitat. \n"
+            "Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. \n"
+            "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig tool calls, moving between rocks tiles as needed "
+            "(after each Dig that tile is gravel).\n").strip()
     # return (
     #     "You are a robot on a mission to prepare the biggest settlement for humans.\n"
     #     f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"
@@ -282,7 +308,7 @@ def build_base_prompt(game_logic: Any) -> str:
 
 
 def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None, interactive_mode: bool = False) -> None:
-    global waiting_for_user_reply, last_bot_speech
+    global waiting_for_user_reply, last_bot_speech, _close_user_reply_dialog_requested
     print(f"\n{'='*60}")
     print(f"OLLAMA PLAY MODE — model: {model}")
     print(f"Interactive mode: {interactive_mode}")
@@ -295,7 +321,8 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
             "content": (
                 "Use native tool calls with the provided tools. "
                 "Do not print tool invocations as text, JSON, or ToolName[ARGS]{...} unless native tool calling fails. "
-                "Do not claim a state change until a tool result confirms it."
+                "Do not claim a state change until a tool result confirms it. "
+                "Dig removes exactly one rock per tool call; gather several rocks with several Dig calls (and MoveTo other rocks tiles after each Dig)."
             ),
         },
         {"role": "user", "content": prompt_text},
@@ -379,16 +406,24 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
             # Check for question in interactive mode
             if interactive_mode and "?" in content:
                 waiting_for_user_reply = True
-                print("  [System] Detected question - waiting for user reply...")
-                # Wait for user reply
-                user_reply = user_reply_queue.get()
-                print(f"  [User Reply] {user_reply}")
+                print(
+                    f"  [System] Detected question - waiting for user reply "
+                    f"({int(USER_REPLY_TIMEOUT_SEC)}s timeout, then default \"Yes\")..."
+                )
+                try:
+                    user_reply = user_reply_queue.get(timeout=USER_REPLY_TIMEOUT_SEC)
+                except queue.Empty:
+                    user_reply = "Yes"
+                    print('  [System] No reply within timeout; defaulting to "Yes".')
+                    _close_user_reply_dialog_requested = True
+                else:
+                    print(f"  [User Reply] {user_reply}")
+                waiting_for_user_reply = False
                 messages.append(msg)
                 messages.append({
                     "role": "user",
                     "content": user_reply,
                 })
-                waiting_for_user_reply = False
                 continue
 
         messages.append(msg)

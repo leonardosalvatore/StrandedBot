@@ -1,6 +1,6 @@
+import atexit
 import sys
 from collections import deque
-from io import StringIO
 
 
 class MessageLog:
@@ -8,17 +8,31 @@ class MessageLog:
         self.messages = deque(maxlen=max_lines)
         self._original_stdout = sys.stdout
         self._original_stderr = sys.stderr
-        self._capture = StringIO()
-        
+        self._capture_active = False
+        self._atexit_registered = False
+
     def start_capture(self) -> None:
         """Start capturing print() output."""
+        if self._capture_active:
+            return
+        if not self._atexit_registered:
+            atexit.register(self.stop_capture)
+            self._atexit_registered = True
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
         sys.stdout = self
         sys.stderr = self
-        
+        self._capture_active = True
+
     def stop_capture(self) -> None:
         """Stop capturing and restore original stdout/stderr."""
-        sys.stdout = self._original_stdout
-        sys.stderr = self._original_stderr
+        if not self._capture_active:
+            return
+        if sys.stdout is self:
+            sys.stdout = self._original_stdout
+        if sys.stderr is self:
+            sys.stderr = self._original_stderr
+        self._capture_active = False
         
     def write(self, text: str) -> None:
         """Capture text from print() and also write to original stdout."""

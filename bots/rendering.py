@@ -49,6 +49,8 @@ _start_custom_button: UIButton | None = None
 _interactive_mode_checkbox: UIButton | None = None
 _start_model_entry: UITextEntryBox | None = None
 _start_rocks_entry: UITextEntryBox | None = None
+_start_energy_entry: UITextEntryBox | None = None
+_start_inventory_entry: UITextEntryBox | None = None
 _interactive_mode_enabled = True
 _custom_prompt_window: UIWindow | None = None
 _custom_prompt_entry: UITextEntryBox | None = None
@@ -277,11 +279,12 @@ def initialize_ui(
 def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     global _start_window, _start_default_button, _start_custom_button
     global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry, _interactive_mode_enabled
+    global _start_energy_entry, _start_inventory_entry
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
 
-    win_w, win_h = 600, 350
+    win_w, win_h = 600, 420
     x = (screen_size[0] - win_w) // 2
     y = (screen_size[1] - win_h) // 2
     _start_window = UIWindow(
@@ -322,8 +325,8 @@ def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None
     )
     _start_model_entry.set_text(default_model or game_logic.OLLAMA_MODEL)
     UILabel(
-        relative_rect=pygame.Rect((20, 190), (140, 30)),
-        text="ROCKS_AMOUNT:",
+        relative_rect=pygame.Rect((20, 190), (170, 30)),
+        text="Rocks clusters generated:",
         manager=_ui_manager,
         container=_start_window,
     )
@@ -333,8 +336,32 @@ def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None
         container=_start_window,
     )
     _start_rocks_entry.set_text("100")
+    UILabel(
+        relative_rect=pygame.Rect((20, 230), (140, 30)),
+        text="Energy:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_energy_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((160, 230), (250, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_energy_entry.set_text("200")
+    UILabel(
+        relative_rect=pygame.Rect((20, 270), (140, 30)),
+        text="Inventory rocks:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_inventory_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((160, 270), (250, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_inventory_entry.set_text("20")
     _interactive_mode_checkbox = UIButton(
-        relative_rect=pygame.Rect((20, 250), (390, 40)),
+        relative_rect=pygame.Rect((20, 315), (390, 40)),
         text="Interactive mode, you can reply to Bot question.",
         manager=_ui_manager,
         container=_start_window,
@@ -401,6 +428,7 @@ def _close_custom_prompt_dialog() -> None:
 def _close_start_menu() -> None:
     global _start_window, _start_default_button, _start_custom_button
     global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry
+    global _start_energy_entry, _start_inventory_entry
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
@@ -409,6 +437,8 @@ def _close_start_menu() -> None:
     _interactive_mode_checkbox = None
     _start_model_entry = None
     _start_rocks_entry = None
+    _start_energy_entry = None
+    _start_inventory_entry = None
     _close_custom_prompt_dialog()
 
 
@@ -438,6 +468,26 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             return 100
         return max(1, value)
 
+    def _read_energy() -> int:
+        if _start_energy_entry is None:
+            return 200
+        raw = _start_energy_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 200
+        return max(1, value)
+
+    def _read_inventory_rocks() -> int:
+        if _start_inventory_entry is None:
+            return 20
+        raw = _start_inventory_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 20
+        return max(0, value)
+
     # Use modern pygame_gui event.type instead of event.user_type
     if event.type == UI_BUTTON_PRESSED:
 
@@ -446,12 +496,16 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
             rocks_amount = _read_rocks_amount()
+            energy = _read_energy()
+            inventory_rocks = _read_inventory_rocks()
             _close_start_menu()
             return {
                 "action": "start_default",
                 "interactive_mode": _interactive_mode_enabled,
                 "model": model_name,
                 "rocks_amount": rocks_amount,
+                "energy": energy,
+                "inventory_rocks": inventory_rocks,
             }
 
         if _start_custom_button and event.ui_element == _start_custom_button:
@@ -477,6 +531,8 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
             rocks_amount = _read_rocks_amount()
+            energy = _read_energy()
+            inventory_rocks = _read_inventory_rocks()
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()
@@ -486,6 +542,8 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
                 "interactive_mode": _interactive_mode_enabled,
                 "model": model_name,
                 "rocks_amount": rocks_amount,
+                "energy": energy,
+                "inventory_rocks": inventory_rocks,
             }
 
     return None
@@ -574,7 +632,10 @@ def handle_user_reply_keyboard(event: pygame.event.Event) -> dict[str, Any] | No
 def check_for_question_and_show_dialog() -> None:
     """Check if bot is waiting for user reply and show dialog if needed."""
     from bots import ollama_agent
-    
+
+    if ollama_agent.consume_user_reply_dialog_close_request():
+        close_user_reply_dialog()
+
     if ollama_agent.is_waiting_for_reply() and _user_reply_window is None:
         open_user_reply_dialog()
 
