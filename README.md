@@ -19,6 +19,14 @@ poetry run bots
 | `OLLAMA_MODEL` | see `game_logic.py` | Model if not overridden in UI |
 | `BOTS_SIM_HOUR_WALL_SEC` | `2` | Game hours advance while the model responds (`0` = off) |
 
+## How LLM ↔ tools ↔ world fit
+
+**`game_logic`** owns the map, bot stats, solar flares, and the real implementations: `MoveTo`, `LookClose`, `LookFar`, `Dig`, `Create`. Each returns a dict (e.g. `ok`, positions, energy) and mutates shared state. `get_tool_dispatch()` maps tool names → those callables.
+
+**`ollama_agent`** builds the **tool schema** (names, descriptions, JSON parameters) to match that API, runs **`ollama.chat(..., tools=...)`**, reads `tool_calls` from the assistant message, invokes the matching `game_logic` function with parsed arguments, and appends **tool results** (JSON strings) to the chat history so the next model turn sees outcomes.
+
+The **main pygame loop** only draws and UI; the **Ollama worker thread** runs this turn loop so the game can keep updating while the model thinks (optional sim-time ticks via `BOTS_SIM_HOUR_WALL_SEC`).
+
 ## Layout
 
 | Module | Role |
