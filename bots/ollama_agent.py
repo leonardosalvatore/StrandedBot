@@ -450,6 +450,23 @@ def build_ollama_tools(
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "ListBuiltTiles",
+                "description": (
+                    "Returns every structure the bot successfully placed via Create: list of "
+                    "{x, y, type, game_hour} on the same grid as MoveTo. "
+                    "Append-only log—tiles may have changed since (solar flares, etc.); "
+                    "use LookClose or LookFar to verify the live map. Costs 1 energy."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+        },
     ]
 
 
@@ -458,15 +475,14 @@ def build_base_prompt(game_logic: Any) -> str:
     battery_rocks_required = game_logic.ROCKS_REQUIRED_FOR_BATTERY
     solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
     habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
-    return ("YOUR MISSION IS:\n"
-            "Build 1 habitat, 1 batterie , 1 solar panel and 1 turret. Do not dig rocks for now. \n"
-            "Then build more turrets and habitats if they are destroyed by solar flares or ants.\n").strip()
     #return ("YOUR MISSION IS:\n"
-    #        "Build a 4x4 square of habitats and 3 batteries. Then attach to the square a line of 4 solar panels. \n"
-    #        "Then lookfar and move 20 tiles and build a much bigger habitat. \n"
-    #        "Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. \n"
-    #        "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig tool calls, moving between rocks tiles as needed "
-    #        "(after each Dig that tile is gravel).\n").strip()
+    #        "Use Lookfar and ListBuiltTiles to build new habitats and batteries and solar panels and turrets. \n").strip()
+    return ("YOUR MISSION IS:\n"
+            "Build a 4x4 square of habitats and 3 batteries. Then attach to the square a line of 4 solar panels. \n"
+            "Then lookfar and move 20 tiles and build a much bigger habitat. \n"
+            "Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. \n"
+            "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig tool calls, moving between rocks tiles as needed "
+            "(after each Dig that tile is gravel).\n").strip()
     # return (
     #     "You are a robot on a mission to prepare the biggest settlement for humans.\n"
     #     f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"

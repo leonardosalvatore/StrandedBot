@@ -222,6 +222,10 @@ _next_ant_id: int = 0
 turret_lasers: list[TurretLaserFX] = []
 turret_last_shot_monotonic: dict[tuple[int, int], float] = {}
 
+# Bot Create() placements only (not procedural CreateTile); for ListBuiltTiles / LLM.
+bot_built_knowledge: list[dict[str, Any]] = []
+bot_built_knowledge_lock = threading.Lock()
+
 # Fog of war setting (False when OLLAMA_PLAY=0 for full visibility)
 enable_fog_of_war = True
 
@@ -232,6 +236,7 @@ TOOL_STATE: dict[str, str] = {
     "LookFar": "LookFar",
     "Dig": "LookClose",
     "Create": "LookClose",
+    "ListBuiltTiles": "LookClose",
 }
 
 
@@ -647,6 +652,8 @@ def initialize_world(use_fog: bool = True, rocks_target: int = STARTING_WORLD_RO
         turret_lasers.clear()
         _next_ant_id = 0
     turret_last_shot_monotonic.clear()
+    with bot_built_knowledge_lock:
+        bot_built_knowledge.clear()
     _initialize_default_tiles()
     _build_scenery_procedural(world_rocks_target)
     if INITIAL_TOWN_SIZE > 0:
@@ -1402,6 +1409,16 @@ def Create(tile_type: str) -> dict[str, Any]:
     if tile_type in POWER_NETWORK_TILE_TYPES:
         _recompute_power_network()
 
+    with bot_built_knowledge_lock:
+        bot_built_knowledge.append(
+            {
+                "x": gx,
+                "y": gy,
+                "type": tile_type,
+                "game_hour": bot_hour_count,
+            }
+        )
+
     rocks_left = sum(1 for item in bot_inventory if item.get("type") == "rock")
     print(
         f"  [Create] Built {tile_type} at ({gx}, {gy}) using {rocks_required} rocks. "
@@ -1419,6 +1436,23 @@ def Create(tile_type: str) -> dict[str, Any]:
     }
 
 
+def ListBuiltTiles() -> dict[str, Any]:
+    if not _advance_solar_flare_hour():
+        return {"ok": False, "error": "Destroyed by solar flare.", "energy": bot_energy}
+    _consume_energy(1)
+    with bot_built_knowledge_lock:
+        built = list(bot_built_knowledge)
+    n = len(built)
+    print(f"  [ListBuiltTiles] Returning {n} recorded bot build(s).")
+    return {
+        "ok": True,
+        "built": built,
+        "count": n,
+        "energy": bot_energy,
+        "hours_to_solar_flare": HOURS_TO_SOLAR_FLARE,
+    }
+
+
 def get_tool_dispatch() -> dict[str, Any]:
     return {
         "MoveTo": MoveTo,
@@ -1426,6 +1460,7 @@ def get_tool_dispatch() -> dict[str, Any]:
         "LookFar": LookFar,
         "Dig": Dig,
         "Create": Create,
+        "ListBuiltTiles": ListBuiltTiles,
     }
 
 
