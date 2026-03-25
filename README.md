@@ -1,6 +1,10 @@
 Local LLM (Ollama) plays a small tile survival game: a robot gathers rocks, builds habitats, and survives solar flares.
 
-[Short video demo](https://youtu.be/esa-aX58YaI) · ![Screenshot](bots/resources/screenshot.jpg)
+[Short video demo (YouTube)](https://youtu.be/esa-aX58YaI) · ![Screenshot](bots/resources/screenshot.jpg)
+
+[Short video demo in tower defense mode (YouTube)](https://youtu.be/aLs3Lp73xuk)
+
+
 
 ## Run
 
