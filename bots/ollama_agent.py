@@ -478,9 +478,7 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
     scenario_norm = str(scenario).strip()
 
     common_tail = (
-        "Use ListBuiltTiles to remember what you have already built, but verify critical areas with LookClose/LookFar. "
-        "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig calls and MoveTo other rocks tiles "
-        "(after each Dig that tile is gravel).\n"
+        "When solar flare is coming, move to a habitat or battery and wait for it to pass or be sure to have 200 energy.\n"
     )
 
     if scenario_norm == "Tower Defense":
@@ -503,7 +501,7 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
     # Explorer (default)
     return (
         "YOUR MISSION:\n"
-        "Explore the map and find opportunities to expand. Build habitat and the required solar+storage network so you can survive and recharge. "
+        "Explore the map. Build habitat and the required solar+storage network only to recharge. "
         "Keep moving forward instead of looping.\n"
         "Never go back to verify solar wiring; keep exploring and building new settlements.\n"
         + common_tail

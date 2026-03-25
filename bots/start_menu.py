@@ -95,13 +95,13 @@ def create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     )
     _start_default_button = UIButton(
         relative_rect=pygame.Rect((20, 50), (390, 40)),
-        text="Bot AI with default prompt",
+        text="Start Bot with default prompt",
         manager=_ui_manager,
         container=_start_window,
     )
     _start_custom_button = UIButton(
         relative_rect=pygame.Rect((20, 100), (390, 40)),
-        text="Bot with Custom prompt",
+        text="Start Bot with Custom prompt",
         manager=_ui_manager,
         container=_start_window,
     )
@@ -246,10 +246,10 @@ def _apply_scenario_defaults(scenario: str) -> None:
     presets: dict[str, dict[str, Any]] = {
         # Explorer: more energy/time to roam + start with a small base.
         "Explorer": {
-            "rocks_amount": game_logic.STARTING_WORLD_ROCKS_TARGET,
+            "rocks_amount": 20,
             "initial_town_size": 0,
             "energy": 1000,
-            "inventory_rocks": 100,
+            "inventory_rocks": 10,
             "hours_solar_flare_every": 100,
             "ant_progression": 0,
             "spawn_ant_after_hour": 100,
@@ -258,7 +258,7 @@ def _apply_scenario_defaults(scenario: str) -> None:
         },
         # Tower Defense: defend the tiny initial town more often.
         "Tower Defense": {
-            "rocks_amount": game_logic.STARTING_WORLD_ROCKS_TARGET,
+            "rocks_amount": 10,
             "initial_town_size": 2,
             "energy": 100,
             "inventory_rocks": 20,
@@ -270,7 +270,7 @@ def _apply_scenario_defaults(scenario: str) -> None:
         },
         # Builder: lower pressure, high energy and lots of rocks for expansion.
         "Builder": {
-            "rocks_amount": game_logic.STARTING_WORLD_ROCKS_TARGET,
+            "rocks_amount": 100,
             "initial_town_size": 0,
             "energy": 1000,
             "inventory_rocks": 100,
