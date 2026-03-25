@@ -20,6 +20,11 @@ _start_rocks_entry: UITextEntryBox | None = None
 _start_energy_entry: UITextEntryBox | None = None
 _start_inventory_entry: UITextEntryBox | None = None
 _start_solar_flare_entry: UITextEntryBox | None = None
+_start_initial_town_entry: UITextEntryBox | None = None
+_start_ant_progression_entry: UITextEntryBox | None = None
+_start_spawn_ant_after_hour_entry: UITextEntryBox | None = None
+_start_ant_energy_entry: UITextEntryBox | None = None
+_start_turret_bullet_rate_entry: UITextEntryBox | None = None
 _interactive_mode_enabled = True
 
 _custom_prompt_window: UIWindow | None = None
@@ -37,11 +42,14 @@ def create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     global _start_window, _start_default_button, _start_custom_button
     global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry, _interactive_mode_enabled
     global _start_energy_entry, _start_inventory_entry, _start_solar_flare_entry
+    global _start_initial_town_entry
+    global _start_ant_progression_entry, _start_spawn_ant_after_hour_entry
+    global _start_ant_energy_entry, _start_turret_bullet_rate_entry
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
 
-    win_w, win_h = 600, 460
+    win_w, win_h = 600, 670
     x = (screen_size[0] - win_w) // 2
     y = (screen_size[1] - win_h) // 2
     _start_window = UIWindow(
@@ -92,45 +100,105 @@ def create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
         manager=_ui_manager,
         container=_start_window,
     )
-    _start_rocks_entry.set_text("100")
+    _start_rocks_entry.set_text(str(game_logic.STARTING_WORLD_ROCKS_TARGET))
     UILabel(
-        relative_rect=pygame.Rect((20, 230), (140, 30)),
+        relative_rect=pygame.Rect((20, 230), (230, 30)),
+        text="Initial town (habitat groups):",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_initial_town_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((250, 230), (160, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_initial_town_entry.set_text(str(int(game_logic.STARTING_INITIAL_TOWN_SIZE)))
+    UILabel(
+        relative_rect=pygame.Rect((20, 270), (140, 30)),
         text="Energy:",
         manager=_ui_manager,
         container=_start_window,
     )
     _start_energy_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((160, 230), (250, 35)),
+        relative_rect=pygame.Rect((160, 270), (250, 35)),
         manager=_ui_manager,
         container=_start_window,
     )
-    _start_energy_entry.set_text("200")
+    _start_energy_entry.set_text(str(game_logic.STARTING_BOT_ENERGY))
     UILabel(
-        relative_rect=pygame.Rect((20, 270), (140, 30)),
+        relative_rect=pygame.Rect((20, 310), (140, 30)),
         text="Inventory rocks:",
         manager=_ui_manager,
         container=_start_window,
     )
     _start_inventory_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((160, 270), (250, 35)),
+        relative_rect=pygame.Rect((160, 310), (250, 35)),
         manager=_ui_manager,
         container=_start_window,
     )
-    _start_inventory_entry.set_text("20")
+    _start_inventory_entry.set_text(str(game_logic.STARTING_INVENTORY_ROCKS))
     UILabel(
-        relative_rect=pygame.Rect((20, 310), (230, 30)),
+        relative_rect=pygame.Rect((20, 350), (230, 30)),
         text="Hours between solar flares:",
         manager=_ui_manager,
         container=_start_window,
     )
     _start_solar_flare_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((250, 310), (160, 35)),
+        relative_rect=pygame.Rect((250, 350), (160, 35)),
         manager=_ui_manager,
         container=_start_window,
     )
-    _start_solar_flare_entry.set_text(str(game_logic.HOURS_SOLAR_FLARE_EVERY))
+    _start_solar_flare_entry.set_text(str(game_logic.STARTING_HOURS_SOLAR_FLARE_EVERY))
+    UILabel(
+        relative_rect=pygame.Rect((20, 390), (230, 30)),
+        text="Ants spawned / game hour:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_ant_progression_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((250, 390), (160, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_ant_progression_entry.set_text(str(int(game_logic.STARTING_ANT_PROGRESSION)))
+    UILabel(
+        relative_rect=pygame.Rect((20, 425), (230, 30)),
+        text="Spawn ants after game hour:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_spawn_ant_after_hour_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((250, 425), (160, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_spawn_ant_after_hour_entry.set_text(str(int(game_logic.STARTING_SPAWN_ANT_AFTER_HOUR)))
+    UILabel(
+        relative_rect=pygame.Rect((20, 460), (230, 30)),
+        text="Ant hits to kill:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_ant_energy_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((250, 460), (160, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_ant_energy_entry.set_text(str(int(game_logic.STARTING_ANT_ENERGY)))
+    UILabel(
+        relative_rect=pygame.Rect((20, 495), (230, 30)),
+        text="Turret shots/sec (real):",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_turret_bullet_rate_entry = UITextEntryBox(
+        relative_rect=pygame.Rect((250, 495), (160, 35)),
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_turret_bullet_rate_entry.set_text(str(float(game_logic.STARTING_TURRET_BULLET_RATE)))
     _interactive_mode_checkbox = UIButton(
-        relative_rect=pygame.Rect((20, 355), (390, 40)),
+        relative_rect=pygame.Rect((20, 540), (390, 40)),
         text="Interactive mode, you can reply to Bot question.",
         manager=_ui_manager,
         container=_start_window,
@@ -198,6 +266,9 @@ def _close_start_menu() -> None:
     global _start_window, _start_default_button, _start_custom_button
     global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry
     global _start_energy_entry, _start_inventory_entry, _start_solar_flare_entry
+    global _start_initial_town_entry
+    global _start_ant_progression_entry, _start_spawn_ant_after_hour_entry
+    global _start_ant_energy_entry, _start_turret_bullet_rate_entry
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
@@ -209,6 +280,11 @@ def _close_start_menu() -> None:
     _start_energy_entry = None
     _start_inventory_entry = None
     _start_solar_flare_entry = None
+    _start_initial_town_entry = None
+    _start_ant_progression_entry = None
+    _start_spawn_ant_after_hour_entry = None
+    _start_ant_energy_entry = None
+    _start_turret_bullet_rate_entry = None
     _close_custom_prompt_dialog()
 
 
@@ -216,37 +292,40 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
     global _interactive_mode_enabled
 
     def _read_rocks_amount() -> int:
+        default = game_logic.STARTING_WORLD_ROCKS_TARGET
         if _start_rocks_entry is None:
-            return 100
+            return default
         raw = _start_rocks_entry.get_text().strip()
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            return 100
+            return default
         return max(1, value)
 
     def _read_energy() -> int:
+        default = game_logic.STARTING_BOT_ENERGY
         if _start_energy_entry is None:
-            return 200
+            return default
         raw = _start_energy_entry.get_text().strip()
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            return 200
+            return default
         return max(1, value)
 
     def _read_inventory_rocks() -> int:
+        default = game_logic.STARTING_INVENTORY_ROCKS
         if _start_inventory_entry is None:
-            return 20
+            return default
         raw = _start_inventory_entry.get_text().strip()
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            return 20
+            return default
         return max(0, value)
 
     def _read_hours_solar_flare_every() -> int:
-        default = game_logic.HOURS_SOLAR_FLARE_EVERY
+        default = game_logic.STARTING_HOURS_SOLAR_FLARE_EVERY
         if _start_solar_flare_entry is None:
             return default
         raw = _start_solar_flare_entry.get_text().strip()
@@ -256,24 +335,89 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             return default
         return max(1, value)
 
+    def _read_ant_progression() -> int:
+        default = int(game_logic.STARTING_ANT_PROGRESSION)
+        if _start_ant_progression_entry is None:
+            return default
+        raw = _start_ant_progression_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(0, value)
+
+    def _read_spawn_ant_after_hour() -> int:
+        default = int(game_logic.STARTING_SPAWN_ANT_AFTER_HOUR)
+        if _start_spawn_ant_after_hour_entry is None:
+            return default
+        raw = _start_spawn_ant_after_hour_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(0, value)
+
+    def _read_initial_town_size() -> int:
+        default = int(game_logic.STARTING_INITIAL_TOWN_SIZE)
+        if _start_initial_town_entry is None:
+            return default
+        raw = _start_initial_town_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(0, min(12, value))
+
+    def _read_ant_energy() -> int:
+        default = int(game_logic.STARTING_ANT_ENERGY)
+        if _start_ant_energy_entry is None:
+            return default
+        raw = _start_ant_energy_entry.get_text().strip()
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(1, value)
+
+    def _read_turret_bullet_rate() -> float:
+        default = float(game_logic.STARTING_TURRET_BULLET_RATE)
+        if _start_turret_bullet_rate_entry is None:
+            return default
+        raw = _start_turret_bullet_rate_entry.get_text().strip()
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(0.05, value)
+
     if event.type == UI_BUTTON_PRESSED:
         if _start_default_button and event.ui_element == _start_default_button:
             model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
             rocks_amount = _read_rocks_amount()
+            initial_town_size = _read_initial_town_size()
             energy = _read_energy()
             inventory_rocks = _read_inventory_rocks()
             hours_solar_flare_every = _read_hours_solar_flare_every()
+            ant_progression = _read_ant_progression()
+            spawn_ant_after_hour = _read_spawn_ant_after_hour()
+            ant_energy = _read_ant_energy()
+            turret_bullet_rate = _read_turret_bullet_rate()
             _close_start_menu()
             return {
                 "action": "start_default",
                 "interactive_mode": _interactive_mode_enabled,
                 "model": model_name,
                 "rocks_amount": rocks_amount,
+                "initial_town_size": initial_town_size,
                 "energy": energy,
                 "inventory_rocks": inventory_rocks,
                 "hours_solar_flare_every": hours_solar_flare_every,
+                "ant_progression": ant_progression,
+                "spawn_ant_after_hour": spawn_ant_after_hour,
+                "ant_energy": ant_energy,
+                "turret_bullet_rate": turret_bullet_rate,
             }
 
         if _start_custom_button and event.ui_element == _start_custom_button:
@@ -299,9 +443,14 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
             rocks_amount = _read_rocks_amount()
+            initial_town_size = _read_initial_town_size()
             energy = _read_energy()
             inventory_rocks = _read_inventory_rocks()
             hours_solar_flare_every = _read_hours_solar_flare_every()
+            ant_progression = _read_ant_progression()
+            spawn_ant_after_hour = _read_spawn_ant_after_hour()
+            ant_energy = _read_ant_energy()
+            turret_bullet_rate = _read_turret_bullet_rate()
             if not prompt_text:
                 return {"action": "custom_prompt_empty"}
             _close_start_menu()
@@ -311,9 +460,14 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
                 "interactive_mode": _interactive_mode_enabled,
                 "model": model_name,
                 "rocks_amount": rocks_amount,
+                "initial_town_size": initial_town_size,
                 "energy": energy,
                 "inventory_rocks": inventory_rocks,
                 "hours_solar_flare_every": hours_solar_flare_every,
+                "ant_progression": ant_progression,
+                "spawn_ant_after_hour": spawn_ant_after_hour,
+                "ant_energy": ant_energy,
+                "turret_bullet_rate": turret_bullet_rate,
             }
 
     return None

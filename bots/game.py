@@ -31,7 +31,7 @@ _game_started = False
 _active_prompt = ""
 _world_initialized = False
 _event_watcher_installed = False
-_rocks_to_generate = 100
+_rocks_to_generate = game_logic.STARTING_WORLD_ROCKS_TARGET
 
 # KEYDOWN often carries unicode for pgzero; we synthesize TEXTINPUT for pygame_gui. When
 # pygame also delivers on_text_input for the same character, skip the duplicate (avoids crashes
@@ -39,18 +39,20 @@ _rocks_to_generate = 100
 _pending_gui_textinput_skip: deque[str] = deque(maxlen=64)
 
 
-def _parse_rocks_amount(value: object, default: int = 100) -> int:
+def _parse_rocks_amount(value: object, default: int | None = None) -> int:
+    d = game_logic.STARTING_WORLD_ROCKS_TARGET if default is None else default
     try:
         return max(1, int(value))
     except (TypeError, ValueError):
-        return default
+        return d
 
 
 def _start_game() -> None:
     global _game_started, _world_initialized, _rocks_to_generate
-    if not _world_initialized:
-        game_logic.initialize_world(use_fog=OLLAMA_PLAY, rocks_target=_rocks_to_generate)
-        _world_initialized = True
+    # Always generate the world when leaving the menu so settings (e.g. initial town size)
+    # match the current form and we never reuse a map built before apply_* ran.
+    game_logic.initialize_world(use_fog=OLLAMA_PLAY, rocks_target=_rocks_to_generate)
+    _world_initialized = True
     _game_started = True
     # Show the game UI windows now that game has started
     from bots.rendering import show_game_windows
@@ -131,11 +133,34 @@ def on_mouse_up(pos, button):
                         )
                         if selected_model:
                             OLLAMA_MODEL = selected_model
-                        game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.bot_start_energy)))
+                        game_logic.apply_initial_town_size(
+                            int(
+                                startup_action.get(
+                                    "initial_town_size", game_logic.STARTING_INITIAL_TOWN_SIZE
+                                )
+                            )
+                        )
+                        game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.STARTING_BOT_ENERGY)))
                         inv_rocks = max(0, int(startup_action.get("inventory_rocks", 0)))
                         game_logic.bot_inventory = [{"type": "rock"}] * inv_rocks
                         game_logic.apply_solar_flare_interval_hours(
-                            int(startup_action.get("hours_solar_flare_every", game_logic.HOURS_SOLAR_FLARE_EVERY))
+                            int(startup_action.get("hours_solar_flare_every", game_logic.STARTING_HOURS_SOLAR_FLARE_EVERY))
+                        )
+                        game_logic.apply_ant_progression(
+                            int(startup_action.get("ant_progression", game_logic.STARTING_ANT_PROGRESSION))
+                        )
+                        game_logic.apply_spawn_ant_after_hour(
+                            int(
+                                startup_action.get(
+                                    "spawn_ant_after_hour", game_logic.STARTING_SPAWN_ANT_AFTER_HOUR
+                                )
+                            )
+                        )
+                        game_logic.apply_ant_energy(
+                            int(startup_action.get("ant_energy", game_logic.STARTING_ANT_ENERGY))
+                        )
+                        game_logic.apply_turret_bullet_rate(
+                            float(startup_action.get("turret_bullet_rate", game_logic.STARTING_TURRET_BULLET_RATE))
                         )
                         _start_game_with_prompt("", interactive_mode)
                     elif action == "start_custom":
@@ -147,11 +172,34 @@ def on_mouse_up(pos, button):
                         )
                         if selected_model:
                             OLLAMA_MODEL = selected_model
-                        game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.bot_start_energy)))
+                        game_logic.apply_initial_town_size(
+                            int(
+                                startup_action.get(
+                                    "initial_town_size", game_logic.STARTING_INITIAL_TOWN_SIZE
+                                )
+                            )
+                        )
+                        game_logic.bot_energy = max(1, int(startup_action.get("energy", game_logic.STARTING_BOT_ENERGY)))
                         inv_rocks = max(0, int(startup_action.get("inventory_rocks", 0)))
                         game_logic.bot_inventory = [{"type": "rock"}] * inv_rocks
                         game_logic.apply_solar_flare_interval_hours(
-                            int(startup_action.get("hours_solar_flare_every", game_logic.HOURS_SOLAR_FLARE_EVERY))
+                            int(startup_action.get("hours_solar_flare_every", game_logic.STARTING_HOURS_SOLAR_FLARE_EVERY))
+                        )
+                        game_logic.apply_ant_progression(
+                            int(startup_action.get("ant_progression", game_logic.STARTING_ANT_PROGRESSION))
+                        )
+                        game_logic.apply_spawn_ant_after_hour(
+                            int(
+                                startup_action.get(
+                                    "spawn_ant_after_hour", game_logic.STARTING_SPAWN_ANT_AFTER_HOUR
+                                )
+                            )
+                        )
+                        game_logic.apply_ant_energy(
+                            int(startup_action.get("ant_energy", game_logic.STARTING_ANT_ENERGY))
+                        )
+                        game_logic.apply_turret_bullet_rate(
+                            float(startup_action.get("turret_bullet_rate", game_logic.STARTING_TURRET_BULLET_RATE))
                         )
                         _start_game_with_prompt(str(startup_action.get("prompt", "")).strip(), interactive_mode)
                     elif action == "open_custom":
@@ -159,9 +207,6 @@ def on_mouse_up(pos, button):
                             startup_action.get("rocks_amount", _rocks_to_generate),
                             _rocks_to_generate,
                         )
-                        if not _world_initialized:
-                            game_logic.initialize_world(use_fog=OLLAMA_PLAY, rocks_target=_rocks_to_generate)
-                            _world_initialized = True
                         open_custom_prompt_dialog(build_base_prompt(game_logic))
                     elif action == "custom_prompt_empty":
                         game_logic.bot_last_speech = "Custom prompt is empty. Please enter text first."

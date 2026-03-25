@@ -95,53 +95,67 @@ def _draw_sand_dots(
         pygame.draw.line(surface, mark_color, (x, y), (x, y), 1)
 
 
-def _draw_habitat_circle(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
-    """Draw a small center circle marker for habitat tiles."""
+def _draw_habitat_circle(
+    surface: pygame.Surface,
+    tile_rect: pygame.Rect,
+    color: tuple[int, int, int],
+    *,
+    fill_blue: bool = False,
+) -> None:
+    """Draw a small center circle; habitats get a blue-filled interior."""
     if tile_rect.width < 6 or tile_rect.height < 6:
         return
 
-    mark_color = _darken_color(color, 0.6)
     radius = max(1, min(tile_rect.width, tile_rect.height) // 5)
+    if fill_blue:
+        pygame.draw.circle(surface, (72, 130, 220), tile_rect.center, radius)
+    mark_color = _darken_color(color, 0.6)
     pygame.draw.circle(surface, mark_color, tile_rect.center, radius, 1)
 
 
 def _draw_battery_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
-    """Draw a light gray battery marker with a tiny centered bolt."""
+    """Battery shell fills the tile (small margin); lightning bolt fills the main body."""
     if tile_rect.width < 6 or tile_rect.height < 6:
         return
 
     battery_color = (205, 210, 215)
     bolt_color = (245, 248, 250)
+    edge = _darken_color(battery_color, 0.78)
 
-    body_width = max(4, tile_rect.width // 2)
-    body_height = max(4, tile_rect.height // 2)
-    body_rect = pygame.Rect(0, 0, body_width, body_height)
-    body_rect.center = tile_rect.center
+    pad = max(1, min(tile_rect.width, tile_rect.height) // 14)
+    inner = tile_rect.inflate(-2 * pad, -2 * pad)
 
-    terminal_width = max(1, body_rect.width // 4)
-    terminal_height = max(1, body_rect.height // 5)
-    terminal_rect = pygame.Rect(0, 0, terminal_width, terminal_height)
-    terminal_rect.midbottom = (body_rect.centerx, body_rect.top + 1)
+    tab_w = max(4, inner.width * 9 // 20)
+    tab_h = max(2, inner.height // 6)
+    terminal_rect = pygame.Rect(0, 0, tab_w, tab_h)
+    terminal_rect.midtop = (inner.centerx, inner.top)
 
-    pygame.draw.rect(surface, battery_color, body_rect, border_radius=1)
-    pygame.draw.rect(surface, _darken_color(battery_color, 0.8), body_rect, 1, border_radius=1)
+    body_rect = pygame.Rect(
+        inner.left,
+        inner.top + tab_h,
+        inner.width,
+        max(4, inner.height - tab_h),
+    )
+    brad = max(1, min(body_rect.width, body_rect.height) // 6)
+    pygame.draw.rect(surface, battery_color, body_rect, border_radius=brad)
+    pygame.draw.rect(surface, edge, body_rect, 1, border_radius=brad)
     pygame.draw.rect(surface, battery_color, terminal_rect)
 
-    inset_x = max(1, body_rect.width // 6)
-    inset_y = max(1, body_rect.height // 6)
-    bolt_top = body_rect.top + inset_y
-    bolt_bottom = body_rect.bottom - inset_y
-    bolt_left = body_rect.left + inset_x
-    bolt_right = body_rect.right - inset_x
+    # Bolt uses almost the full body (minimal margin); same zig-zag topology as before, scaled up.
+    m = max(1, min(body_rect.width, body_rect.height) // 28)
+    bolt_left = body_rect.left + m
+    bolt_right = body_rect.right - m
+    bolt_top = body_rect.top + m
+    bolt_bottom = body_rect.bottom - m
     bolt_mid_y = (bolt_top + bolt_bottom) // 2
-
+    cx = body_rect.centerx
     bolt_points = [
-        (bolt_right - 1, bolt_top),
-        (bolt_left + 1, bolt_mid_y - 1),
-        (body_rect.centerx + 1, bolt_mid_y - 1),
-        (bolt_left, bolt_bottom - 1),
-        (bolt_right - 2, bolt_mid_y),
-        (body_rect.centerx, bolt_mid_y),
+        (bolt_right, bolt_top),
+        (bolt_left, bolt_mid_y - max(1, m)),
+        (cx + max(1, m * 2), bolt_mid_y - max(1, m)),
+        (bolt_left, bolt_bottom),
+        (bolt_right - max(1, m * 2), bolt_mid_y),
+        (cx, bolt_mid_y),
     ]
     pygame.draw.polygon(surface, bolt_color, bolt_points)
 
@@ -166,6 +180,133 @@ def _draw_solar_panel_grid(surface: pygame.Surface, tile_rect: pygame.Rect, colo
         y = top + int((i * height) / 9)
         pygame.draw.line(surface, grid_color, (x, top), (x, top + height - 1), 1)
         pygame.draw.line(surface, grid_color, (left, y), (left + width - 1, y), 1)
+
+
+def _turret_is_operational_unlocked(gx: int, gy: int) -> bool:
+    """Call only while holding game_logic.tiles_lock."""
+    if game_logic.tile_matrix[gx][gy].type != "turret":
+        return False
+    has_solar = has_sink = False
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nx, ny = gx + dx, gy + dy
+        if not (0 <= nx < game_logic.GRID_WIDTH and 0 <= ny < game_logic.GRID_HEIGHT):
+            continue
+        typ = game_logic.tile_matrix[nx][ny].type
+        if typ == "solar_panel":
+            has_solar = True
+        if typ in {"habitat", "battery"}:
+            has_sink = True
+    return has_solar and has_sink
+
+
+def _turret_aim_angle_rad(
+    gx: int,
+    gy: int,
+    *,
+    under_tiles_lock: bool = False,
+    ants_xy: list[tuple[float, float]] | None = None,
+) -> float:
+    """Yaw (radians) toward nearest in-range ant; idle east if none.
+
+    When under_tiles_lock=True, pass ants_xy from a snapshot taken *before* acquiring tiles_lock
+    (never acquire ants_lock while holding tiles_lock — that deadlocks with _spawn_ants).
+    """
+    ts = game_logic.TILE_SIZE
+    tcx = gx * ts + ts / 2
+    tcy = gy * ts + ts / 2
+    range_px = game_logic.TURRET_RANGE_TILES * ts
+    range_px2 = range_px * range_px
+    if under_tiles_lock:
+        operational = _turret_is_operational_unlocked(gx, gy)
+    else:
+        with game_logic.tiles_lock:
+            operational = _turret_is_operational_unlocked(gx, gy)
+    if not operational:
+        return 0.0
+    best_d2 = float("inf")
+    best_dx = 0.0
+    best_dy = 0.0
+    if ants_xy is not None:
+        for ax, ay in ants_xy:
+            d2 = (ax - tcx) ** 2 + (ay - tcy) ** 2
+            if d2 <= range_px2 and d2 < best_d2:
+                best_d2 = d2
+                best_dx = ax - tcx
+                best_dy = ay - tcy
+    else:
+        with game_logic.ants_lock:
+            for a in game_logic.ants:
+                d2 = (a.x - tcx) ** 2 + (a.y - tcy) ** 2
+                if d2 <= range_px2 and d2 < best_d2:
+                    best_d2 = d2
+                    best_dx = a.x - tcx
+                    best_dy = a.y - tcy
+    if best_d2 <= range_px2:
+        return math.atan2(best_dy, best_dx)
+    return 0.0
+
+
+def _draw_turret_rect(
+    surface: pygame.Surface,
+    tile_rect: pygame.Rect,
+    color: tuple[int, int, int],
+    aim_angle_rad: float = 0.0,
+) -> None:
+    """Military-green base plus barrel pointing along aim_angle_rad (from +x)."""
+    if tile_rect.width < 6 or tile_rect.height < 6:
+        return
+    inset = max(2, min(tile_rect.width, tile_rect.height) // 6)
+    body = pygame.Rect(
+        tile_rect.left + inset,
+        tile_rect.top + inset,
+        max(2, tile_rect.width - inset * 2),
+        max(2, tile_rect.height - inset * 2),
+    )
+    pygame.draw.rect(surface, color, body, border_radius=1)
+    pygame.draw.rect(surface, _darken_color(color, 0.62), body, 1, border_radius=1)
+
+    cx, cy = float(tile_rect.centerx), float(tile_rect.centery)
+    blen = min(tile_rect.width, tile_rect.height) * 0.48
+    ex = cx + math.cos(aim_angle_rad) * blen
+    ey = cy + math.sin(aim_angle_rad) * blen
+    bw = max(2, min(tile_rect.width, tile_rect.height) // 5)
+    barrel = _darken_color(color, 0.5)
+    pygame.draw.line(surface, barrel, (cx, cy), (ex, ey), bw)
+    pygame.draw.line(
+        surface,
+        _darken_color(color, 0.72),
+        (cx, cy),
+        (ex, ey),
+        max(1, bw - 2),
+    )
+
+
+def _draw_turret_lasers(
+    target_surface: pygame.Surface,
+    lasers: list[Any],
+    ant_by_id: dict[int, tuple[float, float]],
+    cam_world_x: float,
+    cam_world_y: float,
+    scale: float,
+    map_width: int,
+    map_height: int,
+) -> None:
+    """White laser beams from turret muzzle to target ant (instant hit; VFX only)."""
+    w_wide = max(2, int(round(scale * 0.55)))
+    w_core = max(1, min(3, int(round(scale * 0.22))))
+    underlay = (210, 210, 220)
+    core = (255, 255, 255)
+    for L in lasers:
+        end = ant_by_id.get(L.target_ant_id)
+        if end is None:
+            continue
+        ax, ay = end
+        x0 = (L.muzzle_x - cam_world_x) * scale + map_width / 2
+        y0 = (L.muzzle_y - cam_world_y) * scale + map_height / 2
+        x1 = (ax - cam_world_x) * scale + map_width / 2
+        y1 = (ay - cam_world_y) * scale + map_height / 2
+        pygame.draw.line(target_surface, underlay, (x0, y0), (x1, y1), w_wide)
+        pygame.draw.line(target_surface, core, (x0, y0), (x1, y1), w_core)
 
 
 def initialize_ui(
@@ -512,6 +653,10 @@ def draw_game(
     cam_world_x = game_logic.bot_x + (game_logic.TILE_SIZE / 2)
     cam_world_y = game_logic.bot_y + (game_logic.TILE_SIZE / 2)
 
+    # Ant positions for turret aim: snapshot before tiles_lock (avoid deadlock with _spawn_ants).
+    with game_logic.ants_lock:
+        ants_xy_for_turrets = [(a.x, a.y) for a in game_logic.ants]
+
     # Draw tiles
     with game_logic.tiles_lock:
         for tx in range(tile_x_start, tile_x_end):
@@ -573,12 +718,39 @@ def draw_game(
                         _draw_sand_dots(target_surface, tile_rect, color, tx, ty, dot_count=5, seed_offset=0x9E3779B9)
                     elif t.type == "water":
                         _draw_sand_dots(target_surface, tile_rect, color, tx, ty, dot_count=3, seed_offset=0x85EBCA77)
-                    elif t.type == "habitat" or t.type == "broken_habitat":
-                        _draw_habitat_circle(target_surface, tile_rect, color)
+                    elif t.type == "habitat":
+                        _draw_habitat_circle(target_surface, tile_rect, color, fill_blue=True)
+                    elif t.type == "broken_habitat":
+                        _draw_habitat_circle(target_surface, tile_rect, color, fill_blue=False)
                     elif t.type == "battery":
                         _draw_battery_marker(target_surface, tile_rect, color)
                     elif t.type == "solar_panel":
                         _draw_solar_panel_grid(target_surface, tile_rect, color)
+                    elif t.type == "turret":
+                        _draw_turret_rect(
+                            target_surface,
+                            tile_rect,
+                            color,
+                            _turret_aim_angle_rad(
+                                tx,
+                                ty,
+                                under_tiles_lock=True,
+                                ants_xy=ants_xy_for_turrets,
+                            ),
+                        )
+
+    scale = game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE
+    with game_logic.ants_lock:
+        ants_copy = list(game_logic.ants)
+        lasers_copy = list(game_logic.turret_lasers)
+    ant_by_id = {a.id: (a.x, a.y) for a in ants_copy}
+    ant_radius = max(1, int(max(4, game_logic.BOT_RADIUS // 2) * scale / 5))
+    for ant in ants_copy:
+        sx = ((ant.x - cam_world_x) * scale) + (game_logic.WIDTH / 2)
+        sy = ((ant.y - cam_world_y) * scale) + (game_logic.HEIGHT / 2)
+        if 0 <= sx < game_logic.WIDTH and 0 <= sy < game_logic.HEIGHT:
+            pygame.draw.circle(target_surface, (220, 40, 40), (int(round(sx)), int(round(sy))), ant_radius)
+            pygame.draw.circle(target_surface, (120, 20, 20), (int(round(sx)), int(round(sy))), ant_radius, 1)
 
     # Load spritesheet on first draw
     if _SPRITE_SHEET is None:
@@ -595,6 +767,19 @@ def draw_game(
                 (0, 120, 255),
                 (game_logic.WIDTH // 2, game_logic.HEIGHT // 2),
                 radius_scaled,
+            )
+            with game_logic.ants_lock:
+                _ants = list(game_logic.ants)
+                _lasers = list(game_logic.turret_lasers)
+            _draw_turret_lasers(
+                target_surface,
+                _lasers,
+                {a.id: (a.x, a.y) for a in _ants},
+                cam_world_x,
+                cam_world_y,
+                scale,
+                game_logic.WIDTH,
+                game_logic.HEIGHT,
             )
             return
 
@@ -613,7 +798,6 @@ def draw_game(
 
     bot_center_world_x = game_logic.bot_x + (game_logic.TILE_SIZE / 2)
     bot_center_world_y = game_logic.bot_y + (game_logic.TILE_SIZE / 2)
-    scale = game_logic.DRAW_TILE_SIZE / game_logic.TILE_SIZE
     bot_center_screen_x = ((bot_center_world_x - cam_world_x) * scale) + (game_logic.WIDTH / 2)
     bot_center_screen_y = ((bot_center_world_y - cam_world_y) * scale) + (game_logic.HEIGHT / 2)
 
@@ -621,7 +805,18 @@ def draw_game(
         center=(int(round(bot_center_screen_x)), int(round(bot_center_screen_y)))
     )
     target_surface.blit(scaled, dest_rect)
-    
+
+    _draw_turret_lasers(
+        target_surface,
+        lasers_copy,
+        ant_by_id,
+        cam_world_x,
+        cam_world_y,
+        scale,
+        game_logic.WIDTH,
+        game_logic.HEIGHT,
+    )
+
     # Draw solar flare flash effect if active
     _draw_solar_flare_flash(target_surface, game_logic)
     

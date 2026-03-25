@@ -341,7 +341,7 @@ def build_ollama_tools(
                 "name": "LookFar",
                 "description": (
                     f"Wide-area scan: looks in a radius of {lookfar_distance} tiles around the bot and "
-                    "returns a list of notable features (rocks, habitat, battery, solar_panel) with "
+                    "returns a list of notable features (rocks, habitat, battery, solar_panel, turret) with "
                     f"their absolute tile coordinates (x, y) on the same grid as MoveTo "
                     f"(0–{game_logic.GRID_WIDTH - 1} by 0–{game_logic.GRID_HEIGHT - 1}), type, and distance. "
                     "Rock fields block line-of-sight, so features hidden behind rocks won't be visible. "
@@ -364,7 +364,8 @@ def build_ollama_tools(
                     "MoveTo another 'rocks' tile to dig more. "
                     "To gather N rocks, issue N separate Dig calls (from valid rocks tiles), not one call with a count. "
                     "Adds 1 rock to inventory per successful Dig. "
-                    f"Build costs: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required}. "
+                    f"Build costs: habitat={habitat_rocks_required}, battery={battery_rocks_required}, "
+                    f"solar_panel={solar_panel_rocks_required}, turret={game_logic.ROCKS_REQUIRED_FOR_TURRET}. "
                     "Costs 1 energy per Dig call."
                 ),
                 "parameters": {
@@ -379,10 +380,13 @@ def build_ollama_tools(
             "function": {
                 "name": "Create",
                 "description": (
-                    "Create a structure on the current tile. You cannot build on habitat, battery, or solar_panel tiles. "
+                    "Create a structure on the current tile. You cannot build on existing structures. "
                     f"Build costs: habitat={habitat_rocks_required} rocks, "
-                    f"battery={battery_rocks_required} rock, solar_panel={solar_panel_rocks_required} rocks. "
-                    "Cannot be used on water tiles. "
+                    f"battery={battery_rocks_required} rock, solar_panel={solar_panel_rocks_required} rocks, "
+                    f"turret={game_logic.ROCKS_REQUIRED_FOR_TURRET} rock. "
+                    "Cannot be used on water or broken_habitat. "
+                    "Turret: defense tile; fires an instant white laser at nearby ants at a real-time rate (see game settings) "
+                    "if orthogonally adjacent to a solar_panel and a habitat or battery. Ants take several hits to destroy. "
                     "Costs 1 energy."
                 ),
                 "parameters": {
@@ -390,7 +394,7 @@ def build_ollama_tools(
                     "properties": {
                         "tile_type": {
                             "type": "string",
-                            "enum": ["habitat", "battery", "solar_panel"],
+                            "enum": ["habitat", "battery", "solar_panel", "turret"],
                             "description": "Type of structure to create on the current tile.",
                         }
                     },
@@ -407,11 +411,14 @@ def build_base_prompt(game_logic: Any) -> str:
     solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
     habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
     return ("YOUR MISSION IS:\n"
-            "Build a 4x4 square of habitats and 3 batteries. Then attach to the square a line of 4 solar panels. \n"
-            "Then lookfar and move 20 tiles and build a much bigger habitat. \n"
-            "Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. \n"
-            "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig tool calls, moving between rocks tiles as needed "
-            "(after each Dig that tile is gravel).\n").strip()
+            "Build 1 habitat, 1 batterie , 1 solar panel and 1 turret. Do not dig rocks for now. \n"
+            "Then build more turrets and habitats if they are destroyed by solar flares or ants.\n").strip()
+    #return ("YOUR MISSION IS:\n"
+    #        "Build a 4x4 square of habitats and 3 batteries. Then attach to the square a line of 4 solar panels. \n"
+    #        "Then lookfar and move 20 tiles and build a much bigger habitat. \n"
+    #        "Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. \n"
+    #        "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig tool calls, moving between rocks tiles as needed "
+    #        "(after each Dig that tile is gravel).\n").strip()
     # return (
     #     "You are a robot on a mission to prepare the biggest settlement for humans.\n"
     #     f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"

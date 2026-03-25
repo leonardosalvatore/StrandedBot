@@ -13,12 +13,14 @@ PANEL_HEIGHT = 500
 HEIGHT = MAP_HEIGHT + PANEL_HEIGHT
 TITLE = "Bots"
 
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:8b")
+#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
 #OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
 
 
 OLLAMA_PLAY = os.getenv("OLLAMA_PLAY", "0") == "1"
+# When True, emit periodic [AntDebug] lines in _update_ants (see ANT_DEBUG_LOG_INTERVAL_SEC).
+DEBUG_PRINT = True
 
 TILE_SIZE = 4
 GRID_WIDTH = MAP_WIDTH // TILE_SIZE
@@ -30,23 +32,58 @@ DRAW_TILE_SIZE = MAP_WIDTH // VIEWPORT_TILES_W
 
 BOT_RADIUS = 10
 BOT_SPEED = 220
+# Pixels per second toward MoveTo target (must match update()).
+BOT_MOVE_SPEED = TILE_SIZE * 2
 MOVE_MAX_TILES = 20
 
-# Placeholder for future progression logic (e.g. agent/ant colony style rules).
-ANT_PROGRESSION = False
+# Default new-game / start-menu values (runtime globals below may change each session).
+STARTING_BOT_ENERGY = 2000
+STARTING_INVENTORY_ROCKS = 100
+STARTING_WORLD_ROCKS_TARGET = 200
+# Habitat groups in the pre-built starter town (0 = skip town generation).
+STARTING_INITIAL_TOWN_SIZE = 4
+STARTING_HOURS_SOLAR_FLARE_EVERY = 2000
+STARTING_ANT_PROGRESSION = 1
+# No ant spawns from hourly progression until bot_hour_count reaches this (inclusive).
+STARTING_SPAWN_ANT_AFTER_HOUR = 30
+# Ants removed after this many turret laser hits (per ant).
+STARTING_ANT_ENERGY = 5
+# Real-time shots per second per operational turret (1.0 = one shot per second; 5.0 = five/sec).
+STARTING_TURRET_BULLET_RATE = 1.0
 
-HOURS_SOLAR_FLARE_EVERY = 200
+# New ants spawned per distinct game hour (see _advance_solar_flare_hour). 0 = none.
+ANT_PROGRESSION = STARTING_ANT_PROGRESSION
+SPAWN_ANT_AFTER_HOUR = STARTING_SPAWN_ANT_AFTER_HOUR
+INITIAL_TOWN_SIZE = STARTING_INITIAL_TOWN_SIZE
+
+HOURS_SOLAR_FLARE_EVERY = STARTING_HOURS_SOLAR_FLARE_EVERY
 HOURS_TO_SOLAR_FLARE = HOURS_SOLAR_FLARE_EVERY
 ROCKS_REQUIRED_FOR_HABITAT = 1
 ROCKS_REQUIRED_FOR_BATTERY = 1
 ROCKS_REQUIRED_FOR_SOLAR_PANEL = 1
+ROCKS_REQUIRED_FOR_TURRET = 1
 HABITAT_SOLAR_CHARGE = 25
 
-BUILDABLE_TILE_TYPES = {"habitat", "battery", "solar_panel"}
+# Ant walk speed as a fraction of BOT_MOVE_SPEED (quarter of bot; half of prior ant speed).
+ANT_SPEED_FACTOR = 0.25
+ANT_HABITAT_DAMAGE_PER_SEC = 8.0
+TURRET_RANGE_TILES = 10
+# Hit points per ant (spawn); each laser hit subtracts 1.
+ANT_ENERGY = STARTING_ANT_ENERGY
+# Derived from STARTING_TURRET_BULLET_RATE (shots per second).
+TURRET_SHOT_INTERVAL_SEC = 1.0 / max(STARTING_TURRET_BULLET_RATE, 0.05)
+# Real-time beam segment drawn after each shot (instant damage; FX only).
+LASER_VISIBLE_SEC = 0.12
+# Real-time seconds between [AntDebug] position lines when DEBUG_PRINT is True (0 = no prints).
+ANT_DEBUG_LOG_INTERVAL_SEC = 1.0
+_ant_debug_log_last = 0.0
+
+BUILDABLE_TILE_TYPES = {"habitat", "battery", "solar_panel", "turret"}
 BUILD_COSTS: dict[str, int] = {
     "habitat": ROCKS_REQUIRED_FOR_HABITAT,
     "battery": ROCKS_REQUIRED_FOR_BATTERY,
     "solar_panel": ROCKS_REQUIRED_FOR_SOLAR_PANEL,
+    "turret": ROCKS_REQUIRED_FOR_TURRET,
 }
 POWER_NETWORK_TILE_TYPES = {"habitat", "battery", "solar_panel"}
 
@@ -66,6 +103,36 @@ def apply_solar_flare_interval_hours(hours: int) -> None:
     solar_flare_last_hour = -1
 
 
+def apply_ant_progression(n: int) -> None:
+    global ANT_PROGRESSION
+    ANT_PROGRESSION = max(0, int(n))
+
+
+def apply_spawn_ant_after_hour(n: int) -> None:
+    """First game hour (inclusive) at which hourly ant spawns begin."""
+    global SPAWN_ANT_AFTER_HOUR
+    SPAWN_ANT_AFTER_HOUR = max(0, int(n))
+
+
+def apply_initial_town_size(n: int) -> None:
+    """Number of habitat groups in the procedural starter town (0 = none)."""
+    global INITIAL_TOWN_SIZE
+    INITIAL_TOWN_SIZE = max(0, min(12, int(n)))
+
+
+def apply_ant_energy(n: int) -> None:
+    """Hits to kill per ant (from start menu). Existing ants keep current energy."""
+    global ANT_ENERGY
+    ANT_ENERGY = max(1, int(n))
+
+
+def apply_turret_bullet_rate(shots_per_sec: float) -> None:
+    """Real-time turret fire rate: shots per second (from start menu)."""
+    global TURRET_SHOT_INTERVAL_SEC
+    r = max(0.05, float(shots_per_sec))
+    TURRET_SHOT_INTERVAL_SEC = 1.0 / r
+
+
 TILE_TYPES = {
     "gravel",
     "sand",
@@ -74,6 +141,8 @@ TILE_TYPES = {
     "habitat",
     "battery",
     "solar_panel",
+    "turret",
+    "broken_habitat",
 }
 TILE_COLORS = {
     "gravel": (140, 120, 100),
@@ -83,6 +152,7 @@ TILE_COLORS = {
     "habitat": (180, 255, 100),
     "battery": (245, 215, 90),
     "solar_panel": (90, 150, 215),
+    "turret": (72, 95, 58),
     "broken_habitat": (40, 70, 40),
 }
 
@@ -94,6 +164,8 @@ TILE_DESCRIPTIONS = {
     "habitat": "A sealed habitat module.",
     "battery": "Battery segment connecting habitats and solar panels.",
     "solar_panel": "A solar panel array that powers the settlement.",
+    "turret": "Defensive turret; fires a white laser at nearby ants (real-time cadence) when next to a solar panel and a habitat or battery.",
+    "broken_habitat": "A damaged, breached habitat module.",
 }
 
 @dataclass
@@ -107,18 +179,33 @@ class Tile:
     powered: bool = field(default=False)
 
 
-bot_start_energy = 300
+@dataclass
+class Ant:
+    x: float
+    y: float
+    id: int = 0
+    energy: int = 5
+
+
+@dataclass
+class TurretLaserFX:
+    muzzle_x: float
+    muzzle_y: float
+    target_ant_id: int
+    expires: float
+
+
 bot_x = 400
 bot_y = 550
 bot_target_x: float = bot_x
 bot_target_y: float = bot_y
-bot_energy = bot_start_energy
+bot_energy = STARTING_BOT_ENERGY
 bot_inventory: list[dict[str, Any]] = []
 bot_state: str = "Waiting"
 bot_last_speech: str = ""
 bot_lookfar_distance = 40
 bot_hour_count: int = 0
-world_rocks_target: int = 100
+world_rocks_target: int = STARTING_WORLD_ROCKS_TARGET
 
 
 tiles: dict[tuple[int, int], str] = {}
@@ -128,6 +215,12 @@ tile_matrix: list[list[Tile]] = [
     for x in range(GRID_WIDTH)
 ]
 tiles_lock = threading.Lock()
+
+ants: list[Ant] = []
+ants_lock = threading.Lock()
+_next_ant_id: int = 0
+turret_lasers: list[TurretLaserFX] = []
+turret_last_shot_monotonic: dict[tuple[int, int], float] = {}
 
 # Fog of war setting (False when OLLAMA_PLAY=0 for full visibility)
 enable_fog_of_war = True
@@ -300,7 +393,7 @@ def _place_rock_field(cx: int, cy: int, radius: int, density: float = 0.95) -> i
     return count
 
 
-def _build_scenery_procedural(rocks_target: int = 100) -> None:
+def _build_scenery_procedural(rocks_target: int = STARTING_WORLD_ROCKS_TARGET) -> None:
     t0 = time.time()
     total = 0
     print("Generating map procedurally...")
@@ -354,6 +447,182 @@ def _build_scenery_procedural(rocks_target: int = 100) -> None:
     print(f"Procedural map complete: {total} non-gravel tiles in {elapsed:.3f}s")
 
 
+def _terrain_ok_for_starter_town(x: int, y: int) -> bool:
+    if not (0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT):
+        return False
+    with tiles_lock:
+        # Rocks are overwritten by CreateTile; water would need carving—still skip water.
+        return tile_matrix[x][y].type in {"gravel", "sand", "rocks"}
+
+
+def _starter_town_y_bounds(sy: int) -> tuple[int, int]:
+    """Vertical extent: solar and habitat box share the same four rows as the solar block."""
+    return sy, sy + 3
+
+
+def _initial_town_box_cols(groups: int, nhs: list[int]) -> int:
+    """Columns of structure west of solar (4 rows tall, same y-span as solar)."""
+    total = groups + sum(nhs)
+    rows = 4
+    return (total + rows - 1) // rows
+
+
+def _initial_town_plan_with_nhs(
+    sx: int, sy: int, groups: int, nhs: list[int]
+) -> tuple[list[tuple[int, int, str]], list[tuple[int, int]], int, int, int, int, int, int]:
+    """Place battery+habitat groups in a filled rectangle west of the 4×4 solar (same height as solar)."""
+    solar_cells = [(sx + dx, sy + dy) for dx in range(4) for dy in range(4)]
+
+    seq: list[str] = []
+    for i in range(groups):
+        seq.append("battery")
+        for _ in range(nhs[i]):
+            seq.append("habitat")
+
+    rows = 4
+    cols = (len(seq) + rows - 1) // rows
+    plan: list[tuple[int, int, str]] = []
+    for idx, kind in enumerate(seq):
+        row = idx % rows
+        col = idx // rows
+        px = sx - 2 - col
+        py = sy + row
+        plan.append((px, py, kind))
+
+    min_x = sx - cols - 1
+    max_x = sx + 3
+    min_y = sy
+    max_y = sy + 3
+    ry = sy + 1
+    return plan, solar_cells, min_x, max_x, min_y, max_y, sx, sy, ry
+
+
+def _initial_town_layout_valid(
+    plan: list[tuple[int, int, str]],
+    solar_cells: list[tuple[int, int]],
+    sx: int,
+    sy: int,
+) -> bool:
+    for px, py in solar_cells:
+        if not _terrain_ok_for_starter_town(px, py):
+            return False
+    for px, py, _ in plan:
+        if not _terrain_ok_for_starter_town(px, py):
+            return False
+    # Gap column sx-1 holds four turrets between the habitat box and solar.
+    for k in range(4):
+        if not _terrain_ok_for_starter_town(sx - 1, sy + k):
+            return False
+    return True
+
+
+def _turret_has_solar_and_habitat_neighbors_unlocked(gx: int, gy: int) -> bool:
+    """Call with tiles_lock held (or right after tiles written)."""
+    if tile_matrix[gx][gy].type != "turret":
+        return False
+    has_solar = has_sink = False
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nx, ny = gx + dx, gy + dy
+        if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
+            continue
+        t = tile_matrix[nx][ny].type
+        if t == "solar_panel":
+            has_solar = True
+        if t in {"habitat", "battery"}:
+            has_sink = True
+    return has_solar and has_sink
+
+
+def _generate_initial_town(num_groups: int) -> None:
+    """Place a compact town beside the bot: clusters + 4×4 solar; fallback to random if needed."""
+    groups = max(1, min(12, int(num_groups)))
+    bx, by = _bot_grid_pos()
+
+    def try_near_bot() -> tuple[list[tuple[int, int, str]], list[tuple[int, int]], int, int, int, int, int, int] | None:
+        # Same random habitat counts for all four sides each attempt (span matches "west" math).
+        for _ in range(80):
+            nhs = [random.choice([2, 3]) for _ in range(groups)]
+            cols = _initial_town_box_cols(groups, nhs)
+            candidates = [
+                (bx + cols + 2, by - 1),  # bot west of box (min_x = bx+1; box uses sx-cols-1 .. sx-2)
+                (bx - 4, by - 1),  # bot east of solar (same row)
+                (bx - 1, by + 1),  # solar below bot
+                (bx - 1, by - 4),  # solar above bot
+            ]
+            for sx, sy in candidates:
+                _, y_hi = _starter_town_y_bounds(sy)
+                if not (0 <= sy and y_hi < GRID_HEIGHT and 0 <= sx and sx + 3 < GRID_WIDTH):
+                    continue
+                plan, solar_cells, min_x, max_x, min_y, max_y, sx, sy, ry = _initial_town_plan_with_nhs(
+                    sx, sy, groups, nhs
+                )
+                if min_x < 0 or max_x >= GRID_WIDTH or min_y < 0 or max_y >= GRID_HEIGHT:
+                    continue
+                if _initial_town_layout_valid(plan, solar_cells, sx, sy):
+                    return plan, solar_cells, min_x, max_x, min_y, max_y, sx, sy, ry
+        return None
+
+    near = try_near_bot()
+    if near is not None:
+        plan, solar_cells, min_x, max_x, min_y, max_y, sx, sy, ry = near
+    else:
+        for attempt in range(250):
+            y_margin = 12
+            sx = random.randint(15, GRID_WIDTH - 20)
+            sy = random.randint(10, max(10, GRID_HEIGHT - y_margin))
+            nhs = [random.choice([2, 3]) for _ in range(groups)]
+            plan, solar_cells, min_x, max_x, min_y, max_y, sx, sy, ry = _initial_town_plan_with_nhs(
+                sx, sy, groups, nhs
+            )
+            if _initial_town_layout_valid(plan, solar_cells, sx, sy):
+                break
+        else:
+            print("  [InitialTown] No valid anchor found; skipping starter town.")
+            return
+
+    for px, py in solar_cells:
+        CreateTile(px, py, "solar_panel")
+
+    for px, py, kind in plan:
+        if kind == "habitat":
+            CreateTile(px, py, "habitat")
+            habitat_damage[(px, py)] = {"damage": 0, "repaired": True}
+        else:
+            CreateTile(px, py, "battery")
+
+    # Ensure the column west of the turret strip is built so each turret has solar + battery/habitat.
+    for k in range(4):
+        wx, wy = sx - 2, sy + k
+        if not (0 <= wx < GRID_WIDTH and 0 <= wy < GRID_HEIGHT):
+            continue
+        with tiles_lock:
+            need_pad = tile_matrix[wx][wy].type in {"gravel", "sand", "rocks"}
+        if need_pad:
+            CreateTile(wx, wy, "battery")
+
+    _recompute_power_network()
+
+    placed_t = 0
+    for k in range(4):
+        tx, ty = sx - 1, sy + k
+        if not (0 <= tx < GRID_WIDTH and 0 <= ty < GRID_HEIGHT):
+            continue
+        CreateTile(tx, ty, "turret")
+        with tiles_lock:
+            ok = _turret_has_solar_and_habitat_neighbors_unlocked(tx, ty)
+        if not ok:
+            CreateTile(tx, ty, "gravel")
+        else:
+            placed_t += 1
+
+    n_h = sum(1 for _, _, k in plan if k == "habitat")
+    n_b = sum(1 for _, _, k in plan if k == "battery")
+    print(
+        f"  [InitialTown] Placed {groups} habitat group(s): {n_h} habitats, {n_b} batteries, "
+        f"16 solar panels at ({sx},{sy})–({sx+3},{sy+3}), {placed_t} turret(s) on the inner ring."
+    )
+
+
 def _initialize_default_tiles() -> None:
     with tiles_lock:
         for x in range(GRID_WIDTH):
@@ -369,12 +638,19 @@ def _initialize_default_tiles() -> None:
                 )
 
 
-def initialize_world(use_fog: bool = True, rocks_target: int = 100) -> None:
-    global enable_fog_of_war, world_rocks_target
+def initialize_world(use_fog: bool = True, rocks_target: int = STARTING_WORLD_ROCKS_TARGET) -> None:
+    global enable_fog_of_war, world_rocks_target, turret_last_shot_monotonic, _next_ant_id
     enable_fog_of_war = use_fog
     world_rocks_target = max(1, int(rocks_target))
+    with ants_lock:
+        ants.clear()
+        turret_lasers.clear()
+        _next_ant_id = 0
+    turret_last_shot_monotonic.clear()
     _initialize_default_tiles()
     _build_scenery_procedural(world_rocks_target)
+    if INITIAL_TOWN_SIZE > 0:
+        _generate_initial_town(INITIAL_TOWN_SIZE)
 
 
 def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
@@ -409,6 +685,213 @@ def _consume_energy(amount: int = 1) -> None:
     bot_energy = max(0, bot_energy - amount)
 
 
+def _random_ant_spawn_world_pos() -> tuple[float, float] | None:
+    """Return world (pixel) center of a random non-water tile, or None if no spot found."""
+    for _ in range(128):
+        tx = random.randint(0, GRID_WIDTH - 1)
+        ty = random.randint(0, GRID_HEIGHT - 1)
+        with tiles_lock:
+            if tile_matrix[tx][ty].type == "water":
+                continue
+        cx = tx * TILE_SIZE + TILE_SIZE / 2
+        cy = ty * TILE_SIZE + TILE_SIZE / 2
+        return (cx, cy)
+    return None
+
+
+def _spawn_ants(count: int) -> None:
+    if count <= 0:
+        return
+    spawned = 0
+    global _next_ant_id
+    # Do not hold ants_lock while sampling tiles (tiles_lock) — same lock order as rendering
+    # (ants then tiles) avoids deadlock with draw_game holding tiles_lock.
+    pending: list[Ant] = []
+    for _ in range(count):
+        pos = _random_ant_spawn_world_pos()
+        if pos is None:
+            continue
+        pending.append(Ant(x=pos[0], y=pos[1], id=0, energy=ANT_ENERGY))
+    with ants_lock:
+        for a in pending:
+            _next_ant_id += 1
+            a.id = _next_ant_id
+            ants.append(a)
+            spawned += 1
+    if spawned:
+        print(f"  [Ants] Spawned {spawned} ant(s) at random map locations (ANT_PROGRESSION={count}).")
+
+
+def _nearest_habitat_world_center(ax: float, ay: float) -> tuple[float, float] | None:
+    best: tuple[float, float] | None = None
+    best_d2 = float("inf")
+    with tiles_lock:
+        for (hx, hy) in list(habitat_damage.keys()):
+            if tile_matrix[hx][hy].type != "habitat":
+                continue
+            cx = hx * TILE_SIZE + TILE_SIZE / 2
+            cy = hy * TILE_SIZE + TILE_SIZE / 2
+            d2 = (ax - cx) ** 2 + (ay - cy) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = (cx, cy)
+    return best
+
+
+def _tick_turrets_realtime() -> None:
+    """Fire operational turrets on real-time cooldown when an ant is in range."""
+    global turret_last_shot_monotonic
+    now = time.monotonic()
+    range_px = TURRET_RANGE_TILES * TILE_SIZE
+    range_px2 = range_px * range_px
+    interval = TURRET_SHOT_INTERVAL_SEC
+    ready: list[tuple[tuple[int, int], float, float]] = []
+    with tiles_lock:
+        for gx in range(GRID_WIDTH):
+            for gy in range(GRID_HEIGHT):
+                if tile_matrix[gx][gy].type != "turret":
+                    continue
+                has_solar = has_sink = False
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = gx + dx, gy + dy
+                    if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
+                        continue
+                    t = tile_matrix[nx][ny].type
+                    if t == "solar_panel":
+                        has_solar = True
+                    if t in {"habitat", "battery"}:
+                        has_sink = True
+                if not (has_solar and has_sink):
+                    continue
+                key = (gx, gy)
+                last = turret_last_shot_monotonic.get(key)
+                if last is not None and (now - last) < interval:
+                    continue
+                tcx = gx * TILE_SIZE + TILE_SIZE / 2
+                tcy = gy * TILE_SIZE + TILE_SIZE / 2
+                ready.append((key, tcx, tcy))
+    for key, tcx, tcy in ready:
+        with ants_lock:
+            best_i: int | None = None
+            best_d2 = range_px2
+            for i, a in enumerate(ants):
+                d2 = (a.x - tcx) ** 2 + (a.y - tcy) ** 2
+                if d2 <= best_d2:
+                    best_d2 = d2
+                    best_i = i
+            if best_i is not None:
+                target = ants[best_i]
+                tid = target.id
+                before_e = target.energy
+                target.energy -= 1
+                turret_last_shot_monotonic[key] = now
+                if target.energy <= 0:
+                    ants.pop(best_i)
+                    print(
+                        f"  [Turret] Laser from {key} destroyed ant id={tid} "
+                        f"(next shot in {interval:.2f}s real time)."
+                    )
+                else:
+                    print(
+                        f"  [Turret] Laser from {key} hit ant id={tid} "
+                        f"({before_e} -> {target.energy} energy, next in {interval:.2f}s)."
+                    )
+                turret_lasers.append(
+                    TurretLaserFX(
+                        muzzle_x=tcx,
+                        muzzle_y=tcy,
+                        target_ant_id=tid,
+                        expires=time.monotonic() + LASER_VISIBLE_SEC,
+                    )
+                )
+
+
+def _apply_ant_habitat_eat(gx: int, gy: int, dt: float) -> None:
+    if (gx, gy) not in habitat_damage:
+        return
+    with tiles_lock:
+        if tile_matrix[gx][gy].type != "habitat":
+            return
+        rec = habitat_damage[(gx, gy)]
+        rec["damage"] = min(100.0, float(rec.get("damage", 0)) + ANT_HABITAT_DAMAGE_PER_SEC * dt)
+        if rec["damage"] >= 100.0:
+            habitat_damage.pop((gx, gy), None)
+            tiles[(gx, gy)] = "broken_habitat"
+            tile_matrix[gx][gy] = Tile(
+                x=gx,
+                y=gy,
+                type="broken_habitat",
+                color=TILE_COLORS["broken_habitat"],
+                description=TILE_DESCRIPTIONS["broken_habitat"],
+                fog=tile_matrix[gx][gy].fog,
+                powered=False,
+            )
+            print(f"  [Ants] Habitat at ({gx}, {gy}) destroyed by ants.")
+
+
+def _update_ants(dt: float) -> None:
+    global _ant_debug_log_last
+    speed = BOT_MOVE_SPEED * ANT_SPEED_FACTOR * dt
+    half = TILE_SIZE / 2
+    with ants_lock:
+        snapshot = list(ants)
+    now = time.monotonic()
+    log_pos = (
+        DEBUG_PRINT
+        and ANT_DEBUG_LOG_INTERVAL_SEC > 0
+        and (now - _ant_debug_log_last >= ANT_DEBUG_LOG_INTERVAL_SEC)
+    )
+    if log_pos:
+        _ant_debug_log_last = now
+        with tiles_lock:
+            n_hab_damage = sum(
+                1
+                for (hx, hy) in habitat_damage
+                if tile_matrix[hx][hy].type == "habitat"
+            )
+        print(
+            #f"  [AntDebug] tick: {len(snapshot)} ant(s), "
+            f"habitat_damage rows still type habitat: {n_hab_damage}"
+        )
+    for ant in snapshot:
+        target = _nearest_habitat_world_center(ant.x, ant.y)
+        gx = max(0, min(GRID_WIDTH - 1, int(ant.x) // TILE_SIZE))
+        gy = max(0, min(GRID_HEIGHT - 1, int(ant.y) // TILE_SIZE))
+        if log_pos:
+            has_tgt = "yes" if target is not None else "NO — idle (no intact habitat in habitat_damage)"
+            #print(
+            #    f"  [AntDebug]   id={ant.id} world=({ant.x:.2f},{ant.y:.2f}) tile=({gx},{gy}) "
+            #    f"energy={ant.energy} move_target={has_tgt}"
+            #)
+        if target is None:
+            continue
+        tx, ty = target
+        dx = tx - ant.x
+        dy = ty - ant.y
+        dist = (dx * dx + dy * dy) ** 0.5
+        if dist > 0.001:
+            step = min(speed, dist)
+            ant.x += (dx / dist) * step
+            ant.y += (dy / dist) * step
+        ant.x = max(half, min(MAP_WIDTH - half, ant.x))
+        ant.y = max(half, min(MAP_HEIGHT - half, ant.y))
+        gx = max(0, min(GRID_WIDTH - 1, int(ant.x) // TILE_SIZE))
+        gy = max(0, min(GRID_HEIGHT - 1, int(ant.y) // TILE_SIZE))
+        _apply_ant_habitat_eat(gx, gy, dt)
+
+
+def _update_turret_lasers(_dt: float) -> None:
+    """Remove expired laser beam VFX (damage is applied instantly on fire)."""
+    now = time.monotonic()
+    with ants_lock:
+        i = 0
+        while i < len(turret_lasers):
+            if turret_lasers[i].expires <= now:
+                turret_lasers.pop(i)
+            else:
+                i += 1
+
+
 def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
     """Advance the solar flare countdown and resolve effects.
 
@@ -424,6 +907,8 @@ def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
         solar_flare_last_hour = hour
 
     _apply_powered_habitat_charge()
+    if hour >= SPAWN_ANT_AFTER_HOUR:
+        _spawn_ants(ANT_PROGRESSION)
 
     HOURS_TO_SOLAR_FLARE -= 1
     if HOURS_TO_SOLAR_FLARE > 0:
@@ -679,7 +1164,7 @@ def _is_line_of_sight_blocked(
     to_y: int,
     tile_types: list[list[str]] | None = None,
 ) -> tuple[bool, tuple[int, int] | None]:
-    """Check if line of sight is blocked. Returns (is_blocked, blocking_tile_coords)."""
+    """Fog / LookFar visibility: only rock tiles block line of sight."""
     dx = abs(to_x - from_x)
     dy = abs(to_y - from_y)
     sx = 1 if from_x < to_x else -1
@@ -692,7 +1177,7 @@ def _is_line_of_sight_blocked(
         if (x, y) != (from_x, from_y):
             if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
                 tile_type = tile_types[x][y] if tile_types is not None else tile_matrix[x][y].type
-                if tile_type in {"rocks", "habitat"}:
+                if tile_type == "rocks":
                     return True, (x, y)
 
         if x == to_x and y == to_y:
@@ -878,7 +1363,7 @@ def Create(tile_type: str) -> dict[str, Any]:
         print(f"  [Create] {msg}")
         return {"ok": False, "error": msg, "energy": bot_energy}
 
-    if current_tile in {"water"}:
+    if current_tile in {"water", "broken_habitat"}:
         msg = f"Cannot build {tile_type} on {current_tile} tile at ({gx}, {gy})."
         print(f"  [Create] {msg}")
         return {"ok": False, "error": msg, "energy": bot_energy}
@@ -989,7 +1474,7 @@ def update(dt: float) -> None:
         bot_target_x = max(BOT_RADIUS, min(MAP_WIDTH - BOT_RADIUS, bot_target_x))
         bot_target_y = max(BOT_RADIUS, min(MAP_HEIGHT - BOT_RADIUS, bot_target_y))
 
-    move_speed = TILE_SIZE * 2
+    move_speed = BOT_MOVE_SPEED
     diff_x = bot_target_x - bot_x
     diff_y = bot_target_y - bot_y
     dist = (diff_x**2 + diff_y**2) ** 0.5
@@ -1008,3 +1493,7 @@ def update(dt: float) -> None:
 
     if bot_state == "Charging" and time.time() >= charging_animation_until:
         bot_state = "Waiting"
+
+    _update_ants(dt)
+    _tick_turrets_realtime()
+    _update_turret_lasers(dt)
