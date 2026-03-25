@@ -156,8 +156,8 @@ def on_mouse_up(pos, button):
                                 )
                             )
                         )
-                        game_logic.apply_ant_energy(
-                            int(startup_action.get("ant_energy", game_logic.STARTING_ANT_ENERGY))
+                        game_logic.apply_ant_hits_to_kill(
+                            int(startup_action.get("ant_hits_to_kill", game_logic.STARTING_ANT_HITS_TO_KILL))
                         )
                         game_logic.apply_turret_bullet_rate(
                             float(startup_action.get("turret_bullet_rate", game_logic.STARTING_TURRET_BULLET_RATE))
@@ -195,8 +195,8 @@ def on_mouse_up(pos, button):
                                 )
                             )
                         )
-                        game_logic.apply_ant_energy(
-                            int(startup_action.get("ant_energy", game_logic.STARTING_ANT_ENERGY))
+                        game_logic.apply_ant_hits_to_kill(
+                            int(startup_action.get("ant_hits_to_kill", game_logic.STARTING_ANT_HITS_TO_KILL))
                         )
                         game_logic.apply_turret_bullet_rate(
                             float(startup_action.get("turret_bullet_rate", game_logic.STARTING_TURRET_BULLET_RATE))

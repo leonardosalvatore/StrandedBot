@@ -114,7 +114,7 @@ def _draw_habitat_circle(
 
 
 def _draw_ant_marker(surface: pygame.Surface, cx: float, cy: float, r: int) -> None:
-    """Dagger-shaped silhouette + antennae: one filled polygon, one outline, two lines—no blit/fill circles."""
+    """Dart-shaped body (top-down) plus four legs—no circles."""
     rf = max(2.0, float(r))
     tip = (cx + rf * 1.2, cy)
     upper = (cx - rf * 0.5, cy - rf * 0.95)
@@ -125,9 +125,20 @@ def _draw_ant_marker(surface: pygame.Surface, cx: float, cy: float, r: int) -> N
     edge = (48, 8, 12)
     pygame.draw.polygon(surface, fill, body)
     pygame.draw.polygon(surface, edge, body, 1)
-    ax = cx - rf * 0.48
-    pygame.draw.line(surface, edge, (ax, cy - rf * 0.28), (ax - rf * 0.62, cy - rf * 1.05), 1)
-    pygame.draw.line(surface, edge, (ax, cy + rf * 0.28), (ax - rf * 0.62, cy + rf * 1.05), 1)
+    # Four legs: two pairs along the body, splaying out to the sides/rear (top-down).
+    xf, xr = cx - rf * 0.32, cx - rf * 0.82
+    pygame.draw.line(
+        surface, edge, (xf, cy - rf * 0.38), (xf - rf * 0.92, cy - rf * 1.08), 1
+    )
+    pygame.draw.line(
+        surface, edge, (xf, cy + rf * 0.38), (xf - rf * 0.92, cy + rf * 1.08), 1
+    )
+    pygame.draw.line(
+        surface, edge, (xr, cy - rf * 0.32), (xr - rf * 1.0, cy - rf * 0.72), 1
+    )
+    pygame.draw.line(
+        surface, edge, (xr, cy + rf * 0.32), (xr - rf * 1.0, cy + rf * 0.72), 1
+    )
 
 
 def _draw_battery_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:

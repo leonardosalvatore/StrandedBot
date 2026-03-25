@@ -47,7 +47,7 @@ STARTING_ANT_PROGRESSION = 1
 # No ant spawns from hourly progression until bot_hour_count reaches this (inclusive).
 STARTING_SPAWN_ANT_AFTER_HOUR = 30
 # Ants removed after this many turret laser hits (per ant).
-STARTING_ANT_ENERGY = 5
+STARTING_ANT_HITS_TO_KILL = 5
 # Real-time shots per second per operational turret (1.0 = one shot per second; 5.0 = five/sec).
 STARTING_TURRET_BULLET_RATE = 1.0
 
@@ -69,7 +69,7 @@ ANT_SPEED_FACTOR = 0.25
 ANT_HABITAT_DAMAGE_PER_SEC = 8.0
 TURRET_RANGE_TILES = 10
 # Hit points per ant (spawn); each laser hit subtracts 1.
-ANT_ENERGY = STARTING_ANT_ENERGY
+ANT_HITS_TO_KILL = STARTING_ANT_HITS_TO_KILL
 # Derived from STARTING_TURRET_BULLET_RATE (shots per second).
 TURRET_SHOT_INTERVAL_SEC = 1.0 / max(STARTING_TURRET_BULLET_RATE, 0.05)
 # Real-time beam segment drawn after each shot (instant damage; FX only).
@@ -120,10 +120,10 @@ def apply_initial_town_size(n: int) -> None:
     INITIAL_TOWN_SIZE = max(0, min(12, int(n)))
 
 
-def apply_ant_energy(n: int) -> None:
-    """Hits to kill per ant (from start menu). Existing ants keep current energy."""
-    global ANT_ENERGY
-    ANT_ENERGY = max(1, int(n))
+def apply_ant_hits_to_kill(n: int) -> None:
+    """Laser hits needed to destroy a newly spawned ant (from start menu). Existing ants unchanged."""
+    global ANT_HITS_TO_KILL
+    ANT_HITS_TO_KILL = max(1, int(n))
 
 
 def apply_turret_bullet_rate(shots_per_sec: float) -> None:
@@ -184,7 +184,7 @@ class Ant:
     x: float
     y: float
     id: int = 0
-    energy: int = 5
+    hits_remaining: int = 5
 
 
 @dataclass
@@ -711,7 +711,7 @@ def _spawn_ants(count: int) -> None:
         pos = _random_ant_spawn_world_pos()
         if pos is None:
             continue
-        pending.append(Ant(x=pos[0], y=pos[1], id=0, energy=ANT_ENERGY))
+        pending.append(Ant(x=pos[0], y=pos[1], id=0, hits_remaining=ANT_HITS_TO_KILL))
     with ants_lock:
         for a in pending:
             _next_ant_id += 1
@@ -782,10 +782,10 @@ def _tick_turrets_realtime() -> None:
             if best_i is not None:
                 target = ants[best_i]
                 tid = target.id
-                before_e = target.energy
-                target.energy -= 1
+                before_h = target.hits_remaining
+                target.hits_remaining -= 1
                 turret_last_shot_monotonic[key] = now
-                if target.energy <= 0:
+                if target.hits_remaining <= 0:
                     ants.pop(best_i)
                     print(
                         f"  [Turret] Laser from {key} destroyed ant id={tid} "
@@ -794,7 +794,7 @@ def _tick_turrets_realtime() -> None:
                 else:
                     print(
                         f"  [Turret] Laser from {key} hit ant id={tid} "
-                        f"({before_e} -> {target.energy} energy, next in {interval:.2f}s)."
+                        f"({before_h} -> {target.hits_remaining} hits left, next in {interval:.2f}s)."
                     )
                 turret_lasers.append(
                     TurretLaserFX(
@@ -861,7 +861,7 @@ def _update_ants(dt: float) -> None:
             has_tgt = "yes" if target is not None else "NO — idle (no intact habitat in habitat_damage)"
             #print(
             #    f"  [AntDebug]   id={ant.id} world=({ant.x:.2f},{ant.y:.2f}) tile=({gx},{gy}) "
-            #    f"energy={ant.energy} move_target={has_tgt}"
+            #    f"hits_remaining={ant.hits_remaining} move_target={has_tgt}"
             #)
         if target is None:
             continue

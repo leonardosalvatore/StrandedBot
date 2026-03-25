@@ -34,6 +34,54 @@ def _sim_hour_wall_interval_sec() -> float:
         return 2.0
 
 
+def _llm_context_game_hours() -> int:
+    """Max game-hour span of chat history sent to Ollama (excluding fixed prefix). <=0 = unlimited."""
+    raw = os.getenv("BOTS_LLM_CONTEXT_GAME_HOURS", "100").strip()
+    if not raw:
+        return 100
+    try:
+        return int(raw)
+    except ValueError:
+        return 100
+
+
+def _trim_messages_for_game_hour_window(
+    messages: list[dict[str, Any]],
+    message_hours: list[int],
+    current_hour: int,
+    window_hours: int,
+    *,
+    prefix_len: int = 2,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """
+    Keep system + initial user (first prefix_len), then only messages from game hours
+    in [current_hour - window_hours + 1, current_hour]. Ensures we do not start the
+    suffix with orphan tool messages (extends backward to include the owning assistant).
+    """
+    n = len(messages)
+    if window_hours <= 0 or n <= prefix_len or n != len(message_hours):
+        return messages, message_hours
+    min_hour = current_hour - window_hours + 1
+    kept: set[int] = set(range(prefix_len))
+    for i in range(prefix_len, n):
+        if message_hours[i] >= min_hour:
+            kept.add(i)
+    if len(kept) == prefix_len:
+        return messages[:prefix_len], message_hours[:prefix_len]
+    sorted_kept = sorted(kept)
+    first_suffix = next(k for k in sorted_kept if k >= prefix_len)
+    if messages[first_suffix].get("role") == "tool":
+        low = first_suffix - 1
+        while low >= prefix_len and messages[low].get("role") == "tool":
+            low -= 1
+        if low >= prefix_len:
+            kept.update(range(low, first_suffix))
+        sorted_kept = sorted(kept)
+    trimmed_msgs = [messages[i] for i in sorted_kept]
+    trimmed_hrs = [message_hours[i] for i in sorted_kept]
+    return trimmed_msgs, trimmed_hrs
+
+
 def _wait_model_chat_with_sim_hours(
     game_logic: Any,
     chat_fn: Callable[[], Any],
@@ -460,6 +508,14 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         },
         {"role": "user", "content": prompt_text},
     ]
+    # Game hour when each message was appended (for rolling context). Matches `messages` length.
+    message_hours: list[int] = [0, 0]
+    context_hours = _llm_context_game_hours()
+    if context_hours > 0:
+        print(
+            f"  [LLM] Chat context: last {context_hours} game hours "
+            f"(system + initial mission always kept). Set BOTS_LLM_CONTEXT_GAME_HOURS=0 for unlimited."
+        )
     tools = build_ollama_tools(
         game_logic.bot_lookfar_distance,
         game_logic.ROCKS_REQUIRED_FOR_HABITAT,
@@ -514,7 +570,31 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
             "Use these exact values. If you are unsure, ask to LookClose or LookFar rather than inventing state."
         )
 
-        msgs_for_chat = messages + [{"role": "user", "content": status_grounding}]
+        def _append_message(m: dict[str, Any]) -> None:
+            messages.append(m)
+            message_hours.append(hour)
+
+        def _prune_local_context() -> None:
+            if context_hours <= 0:
+                return
+            nm, nh = _trim_messages_for_game_hour_window(
+                messages,
+                message_hours,
+                game_logic.bot_hour_count,
+                context_hours,
+            )
+            messages.clear()
+            message_hours.clear()
+            messages.extend(nm)
+            message_hours.extend(nh)
+
+        base_msgs, _ = _trim_messages_for_game_hour_window(
+            messages,
+            message_hours,
+            game_logic.bot_hour_count,
+            context_hours,
+        )
+        msgs_for_chat = base_msgs + [{"role": "user", "content": status_grounding}]
 
         try:
             response, destroyed_waiting = _wait_model_chat_with_sim_hours(
@@ -563,14 +643,17 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                 if not reply_timed_out:
                     print(f"  [User Reply] {user_reply}")
                 waiting_for_user_reply = False
-                messages.append(msg)
-                messages.append({
-                    "role": "user",
-                    "content": user_reply,
-                })
+                _append_message(msg)
+                _append_message(
+                    {
+                        "role": "user",
+                        "content": user_reply,
+                    }
+                )
+                _prune_local_context()
                 continue
 
-        messages.append(msg)
+        _append_message(msg)
 
         tool_calls = _coerce_tool_calls(msg, allowed_tool_names)
         if tool_calls and not (msg.get("tool_calls") or []):
@@ -578,12 +661,13 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         if not tool_calls and game_logic.bot_x == game_logic.bot_target_x and game_logic.bot_y == game_logic.bot_target_y:
             game_logic.bot_state = "Waiting"
             print("  [System] No tool call — nudging bot to continue exploring.")
-            messages.append(
+            _append_message(
                 {
                     "role": "user",
                     "content": "Keep exploring! Use LookClose to look around or MoveTo to go somewhere.",
                 }
             )
+            _prune_local_context()
             time.sleep(1)
             continue
 
@@ -615,12 +699,14 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                 except Exception as exc:
                     result = {"ok": False, "error": str(exc)}
 
-            messages.append(
+            _append_message(
                 {
                     "role": "tool",
                     "content": json.dumps(result),
                 }
             )
+
+        _prune_local_context()
 
         game_logic.bot_state = "Waiting"
         game_logic.print_hour_status()
