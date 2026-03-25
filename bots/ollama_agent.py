@@ -470,38 +470,45 @@ def build_ollama_tools(
     ]
 
 
-def build_base_prompt(game_logic: Any) -> str:
+def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
     habitat_rocks_required = game_logic.ROCKS_REQUIRED_FOR_HABITAT
     battery_rocks_required = game_logic.ROCKS_REQUIRED_FOR_BATTERY
     solar_panel_rocks_required = game_logic.ROCKS_REQUIRED_FOR_SOLAR_PANEL
     habitat_solar_charge = game_logic.HABITAT_SOLAR_CHARGE
-    #return ("YOUR MISSION IS:\n"
-    #        "Use Lookfar and ListBuiltTiles to build new habitats and batteries and solar panels and turrets. \n").strip()
-    return ("YOUR MISSION IS:\n"
-            "Build a 4x4 square of habitats and 3 batteries. Then attach to the square a line of 4 solar panels. \n"
-            "Then lookfar and move 20 tiles and build a much bigger habitat. \n"
-            "Never go back to check if they are powered, just keep going in random direction and build bigger new settlements. \n"
-            "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig tool calls, moving between rocks tiles as needed "
-            "(after each Dig that tile is gravel).\n").strip()
-    # return (
-    #     "You are a robot on a mission to prepare the biggest settlement for humans.\n"
-    #     f"Map size: {game_logic.GRID_WIDTH}x{game_logic.GRID_HEIGHT}.\n"
-    #     f"Solar flare every {game_logic.HOURS_SOLAR_FLARE_EVERY} hours get in a habitat before the flare hits to survive.\n"
-    #     f"If your current habitat is connected to a solar panel and a battery, you gain +{habitat_solar_charge} energy each hour.\n"
-    #     #f"Build cost: habitat={habitat_rocks_required}, battery={battery_rocks_required}, solar_panel={solar_panel_rocks_required} rock(s).\n"
-    #     "Keep your energy always more the 200.\n"
-    #     "YOUR MISSION:\n"
-    #     "1) Grab rocks to gather materials for construction, 10 rocks to start. \n"
-    #     "2) Build Habitat and power it immediately with battery + solar_panel so it becomes a safe charging shelter. Use this to keep your energy above 200\n"
-    #     "3) After survival is stable, build a town with group of solar panels , group habitat and batteries, resembling a small settlement.\n"
-    #     "Tool-calling rules:\n"
-    #     "- Use the API tool calling interface for actions.\n"
-    #     "- Do not write tool calls in normal text.\n"
-    #     "- Do not emit JSON blobs or patterns like ToolName[ARGS]{...}. If native tool calling fails, say so plainly instead of faking a call.\n"
-    #     "- Only describe inventory, energy and map changes after the corresponding tool result confirms them.\n"
-    #     "- Never claim habitats, batteries, solar panels, or charging unless STATUS or a tool result confirms them.\n"
-    #     "Available tools: MoveTo, LookClose, LookFar, Dig, Create(tile_type)."
-    #     )
+    scenario_norm = str(scenario).strip()
+
+    common_tail = (
+        "Use ListBuiltTiles to remember what you have already built, but verify critical areas with LookClose/LookFar. "
+        "If you need many rocks: the Dig tool adds one rock per call—issue multiple Dig calls and MoveTo other rocks tiles "
+        "(after each Dig that tile is gravel).\n"
+    )
+
+    if scenario_norm == "Tower Defense":
+        return (
+            "YOUR MISSION:\n"
+            "Defend your starting tiny town. Stay near the base and reinforce it by building habitats, batteries, solar panels, and turrets. "
+            "Build where ants are approaching and where solar flare events threaten your habitats.\n"
+            "Never go back to verify solar wiring; keep reacting and rebuilding forward.\n"
+            + common_tail
+        ).strip()
+
+    if scenario_norm == "Builder":
+        return (
+            "YOUR MISSION:\n"
+            "Expand habitats to build a big town. Create habitats, batteries, and solar panels in expanding clusters.\n"
+            "Never go back to verify solar wiring; keep pushing expansion forward.\n"
+            + common_tail
+        ).strip()
+
+    # Explorer (default)
+    return (
+        "YOUR MISSION:\n"
+        "Explore the map and find opportunities to expand. Build habitat and the required solar+storage network so you can survive and recharge. "
+        "Keep moving forward instead of looping.\n"
+        "Never go back to verify solar wiring; keep exploring and building new settlements.\n"
+        + common_tail
+    ).strip()
+
 
 
 def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None = None, interactive_mode: bool = False) -> None:
@@ -573,16 +580,13 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
             if isinstance(item, dict) and item.get("type") == "rock"
         )
         habitats_total = len(getattr(game_logic, "habitat_damage", {}))
-        charging_possible = (
-            current_tile == "habitat"
-            and bool(getattr(current_tile_obj, "powered", False))
-        )
+        habitat_hourly_charge_active = game_logic.bot_habitat_network_charge_active()
         status_grounding = (
             "SYSTEM STATUS (truth source): "
             f"hour={game_logic.bot_hour_count}, energy={game_logic.bot_energy}, position=({gx},{gy}), "
             f"tile={current_tile}, rocks={rocks_count}, habitats={habitats_total}, "
             f"hours_to_solar_flare={game_logic.HOURS_TO_SOLAR_FLARE}, "
-            f"charging_possible={charging_possible}. "
+            f"habitat_hourly_charge_active={habitat_hourly_charge_active}. "
             "Use these exact values. If you are unsure, ask to LookClose or LookFar rather than inventing state."
         )
 

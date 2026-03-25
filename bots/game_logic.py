@@ -176,7 +176,6 @@ class Tile:
     color: tuple[int, int, int] = field(default=(80, 170, 80))
     description: str = field(default="Loose red gravel and dust.")
     fog: bool = field(default=True)
-    powered: bool = field(default=False)
 
 
 @dataclass
@@ -605,8 +604,6 @@ def _generate_initial_town(num_groups: int) -> None:
         if need_pad:
             CreateTile(wx, wy, "battery")
 
-    _recompute_power_network()
-
     placed_t = 0
     for k in range(4):
         tx, ty = sx - 1, sy + k
@@ -681,7 +678,6 @@ def CreateTile(x: int, y: int, type: str) -> dict[str, Any]:
             color=color,
             description=description,
             fog=existing_fog,
-            powered=False,
         )
 
     return {"ok": True, "x": x, "y": y, "type": type}
@@ -831,7 +827,6 @@ def _apply_ant_habitat_eat(gx: int, gy: int, dt: float) -> None:
                 color=TILE_COLORS["broken_habitat"],
                 description=TILE_DESCRIPTIONS["broken_habitat"],
                 fog=tile_matrix[gx][gy].fog,
-                powered=False,
             )
             print(f"  [Ants] Habitat at ({gx}, {gy}) destroyed by ants.")
 
@@ -899,6 +894,62 @@ def _update_turret_lasers(_dt: float) -> None:
                 i += 1
 
 
+def _habitat_on_solar_network(gx: int, gy: int) -> bool:
+    """True if (gx, gy) is a habitat in an orthogonal component that includes a battery and a solar_panel."""
+    with tiles_lock:
+        if not (0 <= gx < GRID_WIDTH and 0 <= gy < GRID_HEIGHT):
+            return False
+        if tile_matrix[gx][gy].type != "habitat":
+            return False
+        visited: set[tuple[int, int]] = {(gx, gy)}
+        queue: list[tuple[int, int]] = [(gx, gy)]
+        has_battery = False
+        has_solar_panel = False
+        i = 0
+        while i < len(queue):
+            cx, cy = queue[i]
+            i += 1
+            tt = tile_matrix[cx][cy].type
+            if tt == "battery":
+                has_battery = True
+            elif tt == "solar_panel":
+                has_solar_panel = True
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = cx + dx, cy + dy
+                if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
+                    continue
+                if (nx, ny) in visited:
+                    continue
+                if tile_matrix[nx][ny].type not in POWER_NETWORK_TILE_TYPES:
+                    continue
+                visited.add((nx, ny))
+                queue.append((nx, ny))
+        return has_battery and has_solar_panel
+
+
+def bot_habitat_network_charge_active() -> bool:
+    """True if the bot stands on a habitat that receives hourly solar+battery network charge."""
+    gx, gy = _bot_grid_pos()
+    return _habitat_on_solar_network(gx, gy)
+
+
+def _apply_habitat_network_charge() -> None:
+    """If bot is in a habitat on a solar+battery network, recharge each hour tick."""
+    global bot_energy, bot_state, charging_animation_until
+    gx, gy = _bot_grid_pos()
+    tile = tile_matrix[gx][gy]
+    if tile.type != "habitat" or not _habitat_on_solar_network(gx, gy):
+        return
+    before = bot_energy
+    bot_energy += HABITAT_SOLAR_CHARGE
+    bot_state = "Charging"
+    charging_animation_until = time.time() + 0.8
+    print(
+        f"  [Power] Habitat at ({gx}, {gy}) on solar+battery network: "
+        f"+{HABITAT_SOLAR_CHARGE} energy ({before} -> {bot_energy})"
+    )
+
+
 def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
     """Advance the solar flare countdown and resolve effects.
 
@@ -913,7 +964,7 @@ def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
     if hour > 0:
         solar_flare_last_hour = hour
 
-    _apply_powered_habitat_charge()
+    _apply_habitat_network_charge()
     if hour >= SPAWN_ANT_AFTER_HOUR:
         _spawn_ants(ANT_PROGRESSION)
 
@@ -945,80 +996,6 @@ def _advance_solar_flare_hour(current_hour: int | None = None) -> bool:
         return False
     
     return True
-
-
-def _recompute_power_network() -> None:
-    """Recompute cached power state for all habitat/battery/solar tiles."""
-    with tiles_lock:
-        for x in range(GRID_WIDTH):
-            for y in range(GRID_HEIGHT):
-                if tile_matrix[x][y].type in POWER_NETWORK_TILE_TYPES:
-                    tile_matrix[x][y].powered = False
-
-        visited: set[tuple[int, int]] = set()
-        for x in range(GRID_WIDTH):
-            for y in range(GRID_HEIGHT):
-                if (x, y) in visited:
-                    continue
-                if tile_matrix[x][y].type not in POWER_NETWORK_TILE_TYPES:
-                    continue
-
-                component: list[tuple[int, int]] = []
-                queue_nodes: list[tuple[int, int]] = [(x, y)]
-                visited.add((x, y))
-                has_battery = False
-                has_solar_panel = False
-
-                i = 0
-                while i < len(queue_nodes):
-                    cx, cy = queue_nodes[i]
-                    i += 1
-                    component.append((cx, cy))
-                    tile_type = tile_matrix[cx][cy].type
-                    if tile_type == "battery":
-                        has_battery = True
-                    elif tile_type == "solar_panel":
-                        has_solar_panel = True
-
-                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        nx, ny = cx + dx, cy + dy
-                        if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
-                            continue
-                        if (nx, ny) in visited:
-                            continue
-                        if tile_matrix[nx][ny].type not in POWER_NETWORK_TILE_TYPES:
-                            continue
-                        visited.add((nx, ny))
-                        queue_nodes.append((nx, ny))
-
-                component_powered = has_battery and has_solar_panel
-                for px, py in component:
-                    tile_matrix[px][py].powered = component_powered
-
-
-def _is_habitat_connected_to_solar(hx: int, hy: int) -> bool:
-    """Return cached power status for a habitat tile."""
-    if not (0 <= hx < GRID_WIDTH and 0 <= hy < GRID_HEIGHT):
-        return False
-    tile = tile_matrix[hx][hy]
-    return tile.type == "habitat" and tile.powered
-
-
-def _apply_powered_habitat_charge() -> None:
-    """If bot is in a powered habitat, recharge it each hour tick."""
-    global bot_energy, bot_state, charging_animation_until
-    gx, gy = _bot_grid_pos()
-    tile = tile_matrix[gx][gy]
-    if tile.type != "habitat" or not tile.powered:
-        return
-    before = bot_energy
-    bot_energy += HABITAT_SOLAR_CHARGE
-    bot_state = "Charging"
-    charging_animation_until = time.time() + 0.8
-    print(
-        f"  [Power] Habitat at ({gx}, {gy}) is connected to solar panel via battery: "
-        f"+{HABITAT_SOLAR_CHARGE} energy ({before} -> {bot_energy})"
-    )
 
 
 def _bot_grid_pos() -> tuple[int, int]:
@@ -1143,8 +1120,6 @@ def LookClose() -> dict[str, Any]:
                         if habitat:
                             tile_info["damage"] = habitat["damage"]
                             tile_info["repaired"] = habitat["repaired"]
-                    if t.type in POWER_NETWORK_TILE_TYPES:
-                        tile_info["powered"] = t.powered
                     surrounding.append(tile_info)
 
     print(
@@ -1267,8 +1242,6 @@ def LookFar() -> dict[str, Any]:
                 if habitat:
                     feature_info["damage"] = habitat["damage"]
                     feature_info["repaired"] = habitat["repaired"]
-            if tile_type in POWER_NETWORK_TILE_TYPES:
-                feature_info["powered"] = tile_matrix[tx][ty].powered
             features.append(feature_info)
 
     # Reveal fog for visible tiles in one short critical section.
@@ -1406,8 +1379,6 @@ def Create(tile_type: str) -> dict[str, Any]:
         tile_matrix[gx][gy].color = TILE_COLORS["habitat"]
     else:
         habitat_damage.pop((gx, gy), None)
-    if tile_type in POWER_NETWORK_TILE_TYPES:
-        _recompute_power_network()
 
     with bot_built_knowledge_lock:
         bot_built_knowledge.append(

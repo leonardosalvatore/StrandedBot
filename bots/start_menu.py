@@ -25,6 +25,11 @@ _start_ant_progression_entry: UITextEntryBox | None = None
 _start_spawn_ant_after_hour_entry: UITextEntryBox | None = None
 _start_ant_hits_entry: UITextEntryBox | None = None
 _start_turret_bullet_rate_entry: UITextEntryBox | None = None
+
+_start_explorer_button: UIButton | None = None
+_start_tower_defense_button: UIButton | None = None
+_start_builder_button: UIButton | None = None
+_selected_scenario = "Explorer"
 _interactive_mode_enabled = True
 
 _custom_prompt_window: UIWindow | None = None
@@ -45,6 +50,7 @@ def create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     global _start_initial_town_entry
     global _start_ant_progression_entry, _start_spawn_ant_after_hour_entry
     global _start_ant_hits_entry, _start_turret_bullet_rate_entry
+    global _start_explorer_button, _start_tower_defense_button, _start_builder_button, _selected_scenario
     if _ui_manager is None:
         print("[DEBUG] Cannot create start menu - UI manager is None")
         return
@@ -61,9 +67,29 @@ def create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
         resizable=False,
         draggable=False,
     )
+    _selected_scenario = _selected_scenario if _selected_scenario in {"Explorer", "Tower Defense", "Builder"} else "Explorer"
+    scenario_options = ["Explorer", "Tower Defense", "Builder"]
     UILabel(
-        relative_rect=pygame.Rect((15, 10), (400, 30)),
-        text="Choose how to initialize the bot prompt:",
+        relative_rect=pygame.Rect((20, 10), (120, 30)),
+        text="Scenario:",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_explorer_button = UIButton(
+        relative_rect=pygame.Rect((140, 10), (140, 30)),
+        text="Explorer",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_tower_defense_button = UIButton(
+        relative_rect=pygame.Rect((285, 10), (140, 30)),
+        text="Tower Defense",
+        manager=_ui_manager,
+        container=_start_window,
+    )
+    _start_builder_button = UIButton(
+        relative_rect=pygame.Rect((430, 10), (140, 30)),
+        text="Builder",
         manager=_ui_manager,
         container=_start_window,
     )
@@ -207,6 +233,89 @@ def create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
     )
     _interactive_mode_enabled = True
 
+    _refresh_scenario_buttons()
+    _apply_scenario_defaults(_selected_scenario)
+
+
+def _apply_scenario_defaults(scenario: str) -> None:
+    """Overwrite all gameplay fields from the selected scenario."""
+    global _start_rocks_entry, _start_initial_town_entry, _start_energy_entry, _start_inventory_entry
+    global _start_solar_flare_entry, _start_ant_progression_entry, _start_spawn_ant_after_hour_entry
+    global _start_ant_hits_entry, _start_turret_bullet_rate_entry
+
+    presets: dict[str, dict[str, Any]] = {
+        # Explorer: more energy/time to roam + start with a small base.
+        "Explorer": {
+            "rocks_amount": game_logic.STARTING_WORLD_ROCKS_TARGET,
+            "initial_town_size": 0,
+            "energy": 1000,
+            "inventory_rocks": 100,
+            "hours_solar_flare_every": 100,
+            "ant_progression": 0,
+            "spawn_ant_after_hour": 100,
+            "ant_hits_to_kill": game_logic.STARTING_ANT_HITS_TO_KILL,
+            "turret_bullet_rate": game_logic.STARTING_TURRET_BULLET_RATE,
+        },
+        # Tower Defense: defend the tiny initial town more often.
+        "Tower Defense": {
+            "rocks_amount": game_logic.STARTING_WORLD_ROCKS_TARGET,
+            "initial_town_size": 2,
+            "energy": 100,
+            "inventory_rocks": 20,
+            "hours_solar_flare_every": 1200,
+            "ant_progression": 1,
+            "spawn_ant_after_hour": 40,
+            "ant_hits_to_kill": max(1, game_logic.STARTING_ANT_HITS_TO_KILL - 1),
+            "turret_bullet_rate": 3,
+        },
+        # Builder: lower pressure, high energy and lots of rocks for expansion.
+        "Builder": {
+            "rocks_amount": game_logic.STARTING_WORLD_ROCKS_TARGET,
+            "initial_town_size": 0,
+            "energy": 1000,
+            "inventory_rocks": 100,
+            "hours_solar_flare_every": 3000,
+            "ant_progression": 0,
+            "spawn_ant_after_hour": 0,
+            "ant_hits_to_kill": game_logic.STARTING_ANT_HITS_TO_KILL + 1,
+            "turret_bullet_rate": 0.9,
+        },
+    }
+
+    preset = presets.get(scenario)
+    if not preset:
+        return
+
+    if _start_rocks_entry is not None:
+        _start_rocks_entry.set_text(str(preset["rocks_amount"]))
+    if _start_initial_town_entry is not None:
+        _start_initial_town_entry.set_text(str(int(preset["initial_town_size"])))
+    if _start_energy_entry is not None:
+        _start_energy_entry.set_text(str(int(preset["energy"])))
+    if _start_inventory_entry is not None:
+        _start_inventory_entry.set_text(str(int(preset["inventory_rocks"])))
+    if _start_solar_flare_entry is not None:
+        _start_solar_flare_entry.set_text(str(int(preset["hours_solar_flare_every"])))
+    if _start_ant_progression_entry is not None:
+        _start_ant_progression_entry.set_text(str(int(preset["ant_progression"])))
+    if _start_spawn_ant_after_hour_entry is not None:
+        _start_spawn_ant_after_hour_entry.set_text(str(int(preset["spawn_ant_after_hour"])))
+    if _start_ant_hits_entry is not None:
+        _start_ant_hits_entry.set_text(str(int(preset["ant_hits_to_kill"])))
+    if _start_turret_bullet_rate_entry is not None:
+        _start_turret_bullet_rate_entry.set_text(str(float(preset["turret_bullet_rate"])))
+
+
+def _refresh_scenario_buttons() -> None:
+    if _start_explorer_button is not None:
+        _start_explorer_button.set_text("[Explorer]" if _selected_scenario == "Explorer" else "Explorer")
+    if _start_tower_defense_button is not None:
+        _start_tower_defense_button.set_text(
+            "[Tower Defense]" if _selected_scenario == "Tower Defense" else "Tower Defense"
+        )
+    if _start_builder_button is not None:
+        _start_builder_button.set_text("[Builder]" if _selected_scenario == "Builder" else "Builder")
+
 
 def _open_custom_prompt_dialog() -> None:
     global _custom_prompt_window, _custom_prompt_entry
@@ -271,6 +380,7 @@ def _close_start_menu() -> None:
     global _start_initial_town_entry
     global _start_ant_progression_entry, _start_spawn_ant_after_hour_entry
     global _start_ant_hits_entry, _start_turret_bullet_rate_entry
+    global _start_explorer_button, _start_tower_defense_button, _start_builder_button, _selected_scenario
     if _start_window is not None:
         _start_window.kill()
     _start_window = None
@@ -287,11 +397,15 @@ def _close_start_menu() -> None:
     _start_spawn_ant_after_hour_entry = None
     _start_ant_hits_entry = None
     _start_turret_bullet_rate_entry = None
+    _start_explorer_button = None
+    _start_tower_defense_button = None
+    _start_builder_button = None
+    _selected_scenario = "Explorer"
     _close_custom_prompt_dialog()
 
 
 def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
-    global _interactive_mode_enabled
+    global _interactive_mode_enabled, _selected_scenario
 
     def _read_rocks_amount() -> int:
         default = game_logic.STARTING_WORLD_ROCKS_TARGET
@@ -393,6 +507,27 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
         return max(0.05, value)
 
     if event.type == UI_BUTTON_PRESSED:
+        if _start_explorer_button and event.ui_element == _start_explorer_button:
+            _selected_scenario = "Explorer"
+            _refresh_scenario_buttons()
+            _apply_scenario_defaults(_selected_scenario)
+            print("[StartMenu] Scenario button selected: Explorer")
+            return None
+
+        if _start_tower_defense_button and event.ui_element == _start_tower_defense_button:
+            _selected_scenario = "Tower Defense"
+            _refresh_scenario_buttons()
+            _apply_scenario_defaults(_selected_scenario)
+            print("[StartMenu] Scenario button selected: Tower Defense")
+            return None
+
+        if _start_builder_button and event.ui_element == _start_builder_button:
+            _selected_scenario = "Builder"
+            _refresh_scenario_buttons()
+            _apply_scenario_defaults(_selected_scenario)
+            print("[StartMenu] Scenario button selected: Builder")
+            return None
+
         if _start_default_button and event.ui_element == _start_default_button:
             model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
@@ -410,6 +545,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             return {
                 "action": "start_default",
                 "interactive_mode": _interactive_mode_enabled,
+                "scenario": _selected_scenario,
                 "model": model_name,
                 "rocks_amount": rocks_amount,
                 "initial_town_size": initial_town_size,
@@ -423,7 +559,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             }
 
         if _start_custom_button and event.ui_element == _start_custom_button:
-            return {"action": "open_custom", "rocks_amount": _read_rocks_amount()}
+            return {"action": "open_custom", "rocks_amount": _read_rocks_amount(), "scenario": _selected_scenario}
 
         if _interactive_mode_checkbox and event.ui_element == _interactive_mode_checkbox:
             _interactive_mode_enabled = not _interactive_mode_enabled
@@ -441,6 +577,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
             prompt_text = ""
             if _custom_prompt_entry is not None:
                 prompt_text = _custom_prompt_entry.get_text().strip()
+
             model_name = game_logic.OLLAMA_MODEL
             if _start_model_entry is not None:
                 model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
@@ -460,6 +597,7 @@ def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
                 "action": "start_custom",
                 "prompt": prompt_text,
                 "interactive_mode": _interactive_mode_enabled,
+                "scenario": _selected_scenario,
                 "model": model_name,
                 "rocks_amount": rocks_amount,
                 "initial_town_size": initial_town_size,
