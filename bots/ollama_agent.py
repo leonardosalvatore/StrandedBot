@@ -478,22 +478,21 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
     scenario_norm = str(scenario).strip()
 
     common_tail = (
-        "When solar flare is coming, move to a habitat or battery and wait for it to pass or be sure to have 200 energy.\n"
+        "\n"
     )
+    common_head = (" YOUR MISSION:\n"
+            "Stay in an habitat if the energy is below 200 to avoid solar flare damage.")
 
     if scenario_norm == "Tower Defense":
         return (
-            "YOUR MISSION:\n"
-            "Defend your starting tiny town. Stay near the base and reinforce it by building habitats, batteries, solar panels, and turrets. "
-            "Keeo your energy above 200 to avoid solar flare damage."
-            "Build where ants are approaching and where solar flare events threaten your habitats.\n"
-            "Never go back to verify solar wiring; keep reacting and rebuilding forward.\n"
+            common_head +
+            "Expand building habitats, batteries, solar panels, and turrets. "
             + common_tail
         ).strip()
 
     if scenario_norm == "Builder":
         return (
-            "YOUR MISSION:\n"
+            common_head +
             "Expand habitats to build a big town. Create habitats, batteries, and solar panels in expanding clusters.\n"
             "Never go back to verify solar wiring; keep pushing expansion forward.\n"
             + common_tail
@@ -501,7 +500,7 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
 
     # Explorer (default)
     return (
-        "YOUR MISSION:\n"
+        common_head +
         "Explore the map. Build habitat and the required solar+storage network only to recharge. "
         "Keep moving forward instead of looping.\n"
         "Never go back to verify solar wiring; keep exploring and building new settlements.\n"
