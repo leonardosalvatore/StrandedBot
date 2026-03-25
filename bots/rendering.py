@@ -113,6 +113,23 @@ def _draw_habitat_circle(
     pygame.draw.circle(surface, mark_color, tile_rect.center, radius, 1)
 
 
+def _draw_ant_marker(surface: pygame.Surface, cx: float, cy: float, r: int) -> None:
+    """Dagger-shaped silhouette + antennae: one filled polygon, one outline, two lines—no blit/fill circles."""
+    rf = max(2.0, float(r))
+    tip = (cx + rf * 1.2, cy)
+    upper = (cx - rf * 0.5, cy - rf * 0.95)
+    tail = (cx - rf * 1.05, cy)
+    lower = (cx - rf * 0.5, cy + rf * 0.95)
+    body = [tip, upper, tail, lower]
+    fill = (215, 38, 45)
+    edge = (48, 8, 12)
+    pygame.draw.polygon(surface, fill, body)
+    pygame.draw.polygon(surface, edge, body, 1)
+    ax = cx - rf * 0.48
+    pygame.draw.line(surface, edge, (ax, cy - rf * 0.28), (ax - rf * 0.62, cy - rf * 1.05), 1)
+    pygame.draw.line(surface, edge, (ax, cy + rf * 0.28), (ax - rf * 0.62, cy + rf * 1.05), 1)
+
+
 def _draw_battery_marker(surface: pygame.Surface, tile_rect: pygame.Rect, color: tuple[int, int, int]) -> None:
     """Battery shell fills the tile (small margin); lightning bolt fills the main body."""
     if tile_rect.width < 6 or tile_rect.height < 6:
@@ -744,13 +761,12 @@ def draw_game(
         ants_copy = list(game_logic.ants)
         lasers_copy = list(game_logic.turret_lasers)
     ant_by_id = {a.id: (a.x, a.y) for a in ants_copy}
-    ant_radius = max(1, int(max(4, game_logic.BOT_RADIUS // 2) * scale / 5))
+    ant_radius = max(2, int(max(4, game_logic.BOT_RADIUS // 2) * scale / 5))
     for ant in ants_copy:
         sx = ((ant.x - cam_world_x) * scale) + (game_logic.WIDTH / 2)
         sy = ((ant.y - cam_world_y) * scale) + (game_logic.HEIGHT / 2)
         if 0 <= sx < game_logic.WIDTH and 0 <= sy < game_logic.HEIGHT:
-            pygame.draw.circle(target_surface, (220, 40, 40), (int(round(sx)), int(round(sy))), ant_radius)
-            pygame.draw.circle(target_surface, (120, 20, 20), (int(round(sx)), int(round(sy))), ant_radius, 1)
+            _draw_ant_marker(target_surface, sx, sy, ant_radius)
 
     # Load spritesheet on first draw
     if _SPRITE_SHEET is None:
