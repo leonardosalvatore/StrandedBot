@@ -33,7 +33,8 @@ The **main pygame loop** only draws and UI; the **Ollama worker thread** runs th
 |--------|------|
 | `bots/game.py` | pgzero entry, pygame_gui events |
 | `bots/game_logic.py` | Map, tools (`MoveTo`, `Look*`, `Dig`, `Create`), flares, power |
-| `bots/rendering.py` | Viewport, UI windows, start menu |
+| `bots/start_menu.py` | Start screen + custom prompt options |
+| `bots/rendering.py` | Viewport, in-game UI windows |
 | `bots/ollama_agent.py` | Ollama chat + tool loop |
 | `bots/message_log.py` | `print` capture for log window |
 | `bots/cli.py` | `poetry run bots` → pgzero |

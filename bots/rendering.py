@@ -10,6 +10,7 @@ from pygame_gui.elements import UIButton, UILabel, UIWindow, UITextEntryBox
 from pygame_gui.elements.ui_selection_list import UISelectionList
 
 from bots import game_logic
+from bots import start_menu
 
 try:
     from pygame_gui.core.ui_element import UIElement
@@ -44,20 +45,6 @@ _last_speech_text: str | None = None
 _last_stats_text: str | None = None
 _last_prompt_text: str | None = None
 
-_start_window: UIWindow | None = None
-_start_default_button: UIButton | None = None
-_start_custom_button: UIButton | None = None
-_interactive_mode_checkbox: UIButton | None = None
-_start_model_entry: UITextEntryBox | None = None
-_start_rocks_entry: UITextEntryBox | None = None
-_start_energy_entry: UITextEntryBox | None = None
-_start_inventory_entry: UITextEntryBox | None = None
-_start_solar_flare_entry: UITextEntryBox | None = None
-_interactive_mode_enabled = True
-_custom_prompt_window: UIWindow | None = None
-_custom_prompt_entry: UITextEntryBox | None = None
-_custom_prompt_confirm_button: UIButton | None = None
-_custom_prompt_cancel_button: UIButton | None = None
 _user_reply_window: UIWindow | None = None
 _user_reply_entry: UITextEntryBox | None = None
 _user_reply_send_button: UIButton | None = None
@@ -189,7 +176,8 @@ def initialize_ui(
     global _stats_text, _log_text, _speech_text, _prompt_text
     
     _ui_manager = pygame_gui.UIManager(screen_size)
-    
+    start_menu.set_ui_manager(_ui_manager)
+
     # Preload fonts to avoid warnings
     _ui_manager.preload_fonts([
         {'name': 'noto_sans', 'point_size': 12, 'style': 'regular', 'antialiased': '1'},
@@ -208,7 +196,7 @@ def initialize_ui(
     ])
     
     # Create start menu FIRST so it's on top
-    _create_start_menu(screen_size, default_model or game_logic.OLLAMA_MODEL)
+    start_menu.create_start_menu(screen_size, default_model or game_logic.OLLAMA_MODEL)
     
     # 1. Bot Stats Window (left-middle) - minimized by default
     stats_y = max(10, (screen_size[1] // 2) - 200)
@@ -279,185 +267,6 @@ def initialize_ui(
     return _ui_manager
 
 
-def _create_start_menu(screen_size: tuple[int, int], default_model: str) -> None:
-    global _start_window, _start_default_button, _start_custom_button
-    global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry, _interactive_mode_enabled
-    global _start_energy_entry, _start_inventory_entry, _start_solar_flare_entry
-    if _ui_manager is None:
-        print("[DEBUG] Cannot create start menu - UI manager is None")
-        return
-
-    win_w, win_h = 600, 460
-    x = (screen_size[0] - win_w) // 2
-    y = (screen_size[1] - win_h) // 2
-    _start_window = UIWindow(
-        rect=pygame.Rect((x, y), (win_w, win_h)),
-        manager=_ui_manager,
-        window_display_title="Start Game",
-        resizable=False,
-        draggable=False,  # Make it non-draggable so buttons work better
-    )
-    UILabel(
-        relative_rect=pygame.Rect((15, 10), (400, 30)),
-        text="Choose how to initialize the bot prompt:",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_default_button = UIButton(
-        relative_rect=pygame.Rect((20, 50), (390, 40)),
-        text="Bot AI with default prompt",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_custom_button = UIButton(
-        relative_rect=pygame.Rect((20, 100), (390, 40)),
-        text="Bot with Custom prompt",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    UILabel(
-        relative_rect=pygame.Rect((20, 150), (140, 30)),
-        text="OLLAMA_MODEL:",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_model_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((160, 150), (250, 35)),
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_model_entry.set_text(default_model or game_logic.OLLAMA_MODEL)
-    UILabel(
-        relative_rect=pygame.Rect((20, 190), (170, 30)),
-        text="Rocks clusters generated:",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_rocks_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((160, 190), (250, 35)),
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_rocks_entry.set_text("100")
-    UILabel(
-        relative_rect=pygame.Rect((20, 230), (140, 30)),
-        text="Energy:",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_energy_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((160, 230), (250, 35)),
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_energy_entry.set_text("200")
-    UILabel(
-        relative_rect=pygame.Rect((20, 270), (140, 30)),
-        text="Inventory rocks:",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_inventory_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((160, 270), (250, 35)),
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_inventory_entry.set_text("20")
-    UILabel(
-        relative_rect=pygame.Rect((20, 310), (230, 30)),
-        text="Hours between solar flares:",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_solar_flare_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((250, 310), (160, 35)),
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _start_solar_flare_entry.set_text(str(game_logic.HOURS_SOLAR_FLARE_EVERY))
-    _interactive_mode_checkbox = UIButton(
-        relative_rect=pygame.Rect((20, 355), (390, 40)),
-        text="Interactive mode, you can reply to Bot question.",
-        manager=_ui_manager,
-        container=_start_window,
-    )
-    _interactive_mode_enabled = True
-
-
-def _open_custom_prompt_dialog() -> None:
-    global _custom_prompt_window, _custom_prompt_entry
-    global _custom_prompt_confirm_button, _custom_prompt_cancel_button
-    if _ui_manager is None or _custom_prompt_window is not None:
-        return
-
-    _custom_prompt_window = UIWindow(
-        rect=pygame.Rect((140, 120), (920, 520)),
-        manager=_ui_manager,
-        window_display_title="Custom Prompt",
-        resizable=False,
-    )
-    UILabel(
-        relative_rect=pygame.Rect((15, 10), (880, 25)),
-        text="Enter the prompt text for the AI:",
-        manager=_ui_manager,
-        container=_custom_prompt_window,
-    )
-    _custom_prompt_entry = UITextEntryBox(
-        relative_rect=pygame.Rect((15, 40), (880, 370)),
-        manager=_ui_manager,
-        container=_custom_prompt_window,
-    )
-    _custom_prompt_confirm_button = UIButton(
-        relative_rect=pygame.Rect((15, 430), (430, 50)),
-        text="Start with custom prompt",
-        manager=_ui_manager,
-        container=_custom_prompt_window,
-    )
-    _custom_prompt_cancel_button = UIButton(
-        relative_rect=pygame.Rect((465, 430), (430, 50)),
-        text="Cancel",
-        manager=_ui_manager,
-        container=_custom_prompt_window,
-    )
-
-
-def open_custom_prompt_dialog(default_text: str) -> None:
-    _open_custom_prompt_dialog()
-    if _custom_prompt_entry is not None:
-        _custom_prompt_entry.set_text(default_text)
-    pygame.key.start_text_input()
-
-
-def _close_custom_prompt_dialog() -> None:
-    global _custom_prompt_window, _custom_prompt_entry
-    global _custom_prompt_confirm_button, _custom_prompt_cancel_button
-    if _custom_prompt_window is not None:
-        _custom_prompt_window.kill()
-    _custom_prompt_window = None
-    _custom_prompt_entry = None
-    _custom_prompt_confirm_button = None
-    _custom_prompt_cancel_button = None
-    pygame.key.stop_text_input()
-
-
-def _close_start_menu() -> None:
-    global _start_window, _start_default_button, _start_custom_button
-    global _interactive_mode_checkbox, _start_model_entry, _start_rocks_entry
-    global _start_energy_entry, _start_inventory_entry, _start_solar_flare_entry
-    if _start_window is not None:
-        _start_window.kill()
-    _start_window = None
-    _start_default_button = None
-    _start_custom_button = None
-    _interactive_mode_checkbox = None
-    _start_model_entry = None
-    _start_rocks_entry = None
-    _start_energy_entry = None
-    _start_inventory_entry = None
-    _start_solar_flare_entry = None
-    _close_custom_prompt_dialog()
-
-
 def show_game_windows() -> None:
     """Show the game UI windows after game starts."""
     global _stats_window, _log_window, _speech_window, _input_window
@@ -469,115 +278,6 @@ def show_game_windows() -> None:
         _speech_window.show()
     if _input_window:
         _input_window.show()
-
-
-def handle_startup_ui_event(event: pygame.event.Event) -> dict[str, Any] | None:
-    global _interactive_mode_enabled
-
-    def _read_rocks_amount() -> int:
-        if _start_rocks_entry is None:
-            return 100
-        raw = _start_rocks_entry.get_text().strip()
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 100
-        return max(1, value)
-
-    def _read_energy() -> int:
-        if _start_energy_entry is None:
-            return 200
-        raw = _start_energy_entry.get_text().strip()
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 200
-        return max(1, value)
-
-    def _read_inventory_rocks() -> int:
-        if _start_inventory_entry is None:
-            return 20
-        raw = _start_inventory_entry.get_text().strip()
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 20
-        return max(0, value)
-
-    def _read_hours_solar_flare_every() -> int:
-        default = game_logic.HOURS_SOLAR_FLARE_EVERY
-        if _start_solar_flare_entry is None:
-            return default
-        raw = _start_solar_flare_entry.get_text().strip()
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return default
-        return max(1, value)
-
-    # Use modern pygame_gui event.type instead of event.user_type
-    if event.type == UI_BUTTON_PRESSED:
-
-        if _start_default_button and event.ui_element == _start_default_button:
-            model_name = game_logic.OLLAMA_MODEL
-            if _start_model_entry is not None:
-                model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
-            rocks_amount = _read_rocks_amount()
-            energy = _read_energy()
-            inventory_rocks = _read_inventory_rocks()
-            hours_solar_flare_every = _read_hours_solar_flare_every()
-            _close_start_menu()
-            return {
-                "action": "start_default",
-                "interactive_mode": _interactive_mode_enabled,
-                "model": model_name,
-                "rocks_amount": rocks_amount,
-                "energy": energy,
-                "inventory_rocks": inventory_rocks,
-                "hours_solar_flare_every": hours_solar_flare_every,
-            }
-
-        if _start_custom_button and event.ui_element == _start_custom_button:
-            return {"action": "open_custom", "rocks_amount": _read_rocks_amount()}
-        
-        if _interactive_mode_checkbox and event.ui_element == _interactive_mode_checkbox:
-            _interactive_mode_enabled = not _interactive_mode_enabled
-            if _interactive_mode_enabled:
-                _interactive_mode_checkbox.set_text("Interactive mode, you can reply to Bot question.")
-            else:
-                _interactive_mode_checkbox.set_text("Not interactive mode, Bot is all alone")
-            return None
-
-        if _custom_prompt_cancel_button and event.ui_element == _custom_prompt_cancel_button:
-            _close_custom_prompt_dialog()
-            return {"action": "cancel_custom"}
-
-        if _custom_prompt_confirm_button and event.ui_element == _custom_prompt_confirm_button:
-            prompt_text = ""
-            if _custom_prompt_entry is not None:
-                prompt_text = _custom_prompt_entry.get_text().strip()
-            model_name = game_logic.OLLAMA_MODEL
-            if _start_model_entry is not None:
-                model_name = _start_model_entry.get_text().strip() or game_logic.OLLAMA_MODEL
-            rocks_amount = _read_rocks_amount()
-            energy = _read_energy()
-            inventory_rocks = _read_inventory_rocks()
-            hours_solar_flare_every = _read_hours_solar_flare_every()
-            if not prompt_text:
-                return {"action": "custom_prompt_empty"}
-            _close_start_menu()
-            return {
-                "action": "start_custom",
-                "prompt": prompt_text,
-                "interactive_mode": _interactive_mode_enabled,
-                "model": model_name,
-                "rocks_amount": rocks_amount,
-                "energy": energy,
-                "inventory_rocks": inventory_rocks,
-                "hours_solar_flare_every": hours_solar_flare_every,
-            }
-
-    return None
 
 
 def open_user_reply_dialog() -> None:
@@ -982,8 +682,7 @@ def sync_ui_to_screen(screen_size: tuple[int, int]) -> None:
     if current_size != tuple(screen_size):
         _ui_manager.set_window_resolution(screen_size)
 
-    _clamp_window_to_screen(_start_window, screen_size)
-    _clamp_window_to_screen(_custom_prompt_window, screen_size)
+    start_menu.clamp_start_menu_windows(screen_size)
     _clamp_window_to_screen(_user_reply_window, screen_size)
     _clamp_window_to_screen(_stats_window, screen_size)
     _clamp_window_to_screen(_log_window, screen_size)

@@ -1,4 +1,5 @@
 import atexit
+from collections import deque
 
 import pygame
 from pygame_gui import UI_BUTTON_PRESSED
@@ -10,13 +11,12 @@ from bots.rendering import (
     bump_user_reply_deadline_if_waiting,
     draw_game,
     get_ui_manager,
-    handle_startup_ui_event,
     handle_user_reply_event,
     handle_user_reply_keyboard,
     initialize_ui,
-    open_custom_prompt_dialog,
     sync_ui_to_screen,
 )
+from bots.start_menu import handle_startup_ui_event, open_custom_prompt_dialog
 
 WIDTH = game_logic.WIDTH
 HEIGHT = game_logic.HEIGHT
@@ -32,6 +32,11 @@ _active_prompt = ""
 _world_initialized = False
 _event_watcher_installed = False
 _rocks_to_generate = 100
+
+# KEYDOWN often carries unicode for pgzero; we synthesize TEXTINPUT for pygame_gui. When
+# pygame also delivers on_text_input for the same character, skip the duplicate (avoids crashes
+# on select-all + type) while still allowing IME/paste-only TEXTINPUT when KEYDOWN had no unicode.
+_pending_gui_textinput_skip: deque[str] = deque(maxlen=64)
 
 
 def _parse_rocks_amount(value: object, default: int = 100) -> int:
@@ -228,16 +233,13 @@ def on_key_down(key, mod, unicode=""):
     )
     ui_manager.process_events(key_event)
 
-    # Only synthesize TEXTINPUT for printable characters.
-    # Control chars like DEL/BS must be handled via KEYDOWN only.
     if safe_unicode:
         text_event = pygame.event.Event(
             pygame.TEXTINPUT,
-            {
-                "text": safe_unicode,
-            },
+            {"text": safe_unicode},
         )
         ui_manager.process_events(text_event)
+        _pending_gui_textinput_skip.append(safe_unicode)
 
 
 def on_key_up(key, mod):
@@ -267,6 +269,13 @@ def on_text_input(text):
 
     if not isinstance(text, str) or not text or not text.isprintable():
         return
+
+    global _pending_gui_textinput_skip
+    if _pending_gui_textinput_skip:
+        if text == _pending_gui_textinput_skip[0]:
+            _pending_gui_textinput_skip.popleft()
+            return
+        _pending_gui_textinput_skip.clear()
 
     text_event = pygame.event.Event(
         pygame.TEXTINPUT,
