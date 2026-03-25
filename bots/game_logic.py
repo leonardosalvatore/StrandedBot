@@ -501,6 +501,10 @@ def _initial_town_plan_with_nhs(
     return plan, solar_cells, min_x, max_x, min_y, max_y, sx, sy, ry
 
 
+# Starter-town turret strip: one column at sx-1; was 4 rows, halved to 2.
+_INITIAL_TOWN_TURRET_ROWS = 2
+
+
 def _initial_town_layout_valid(
     plan: list[tuple[int, int, str]],
     solar_cells: list[tuple[int, int]],
@@ -513,8 +517,8 @@ def _initial_town_layout_valid(
     for px, py, _ in plan:
         if not _terrain_ok_for_starter_town(px, py):
             return False
-    # Gap column sx-1 holds four turrets between the habitat box and solar.
-    for k in range(4):
+    # Gap column sx-1 holds turrets between the habitat box and solar (see _INITIAL_TOWN_TURRET_ROWS).
+    for k in range(_INITIAL_TOWN_TURRET_ROWS):
         if not _terrain_ok_for_starter_town(sx - 1, sy + k):
             return False
     return True
@@ -595,7 +599,7 @@ def _generate_initial_town(num_groups: int) -> None:
             CreateTile(px, py, "battery")
 
     # Ensure the column west of the turret strip is built so each turret has solar + battery/habitat.
-    for k in range(4):
+    for k in range(_INITIAL_TOWN_TURRET_ROWS):
         wx, wy = sx - 2, sy + k
         if not (0 <= wx < GRID_WIDTH and 0 <= wy < GRID_HEIGHT):
             continue
@@ -605,7 +609,7 @@ def _generate_initial_town(num_groups: int) -> None:
             CreateTile(wx, wy, "battery")
 
     placed_t = 0
-    for k in range(4):
+    for k in range(_INITIAL_TOWN_TURRET_ROWS):
         tx, ty = sx - 1, sy + k
         if not (0 <= tx < GRID_WIDTH and 0 <= ty < GRID_HEIGHT):
             continue

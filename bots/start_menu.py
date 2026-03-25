@@ -258,13 +258,13 @@ def _apply_scenario_defaults(scenario: str) -> None:
         },
         # Tower Defense: defend the tiny initial town more often.
         "Tower Defense": {
-            "rocks_amount": 10,
-            "initial_town_size": 2,
+            "rocks_amount": 100,
+            "initial_town_size": 4,
             "energy": 100,
             "inventory_rocks": 20,
             "hours_solar_flare_every": 1200,
             "ant_progression": 1,
-            "spawn_ant_after_hour": 40,
+            "spawn_ant_after_hour": 20,
             "ant_hits_to_kill": max(1, game_logic.STARTING_ANT_HITS_TO_KILL - 1),
             "turret_bullet_rate": 3,
         },

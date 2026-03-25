@@ -485,6 +485,7 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
         return (
             "YOUR MISSION:\n"
             "Defend your starting tiny town. Stay near the base and reinforce it by building habitats, batteries, solar panels, and turrets. "
+            "Keeo your energy above 200 to avoid solar flare damage."
             "Build where ants are approaching and where solar flare events threaten your habitats.\n"
             "Never go back to verify solar wiring; keep reacting and rebuilding forward.\n"
             + common_tail
@@ -582,7 +583,7 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
         status_grounding = (
             "SYSTEM STATUS (truth source): "
             f"hour={game_logic.bot_hour_count}, energy={game_logic.bot_energy}, position=({gx},{gy}), "
-            f"tile={current_tile}, rocks={rocks_count}, habitats={habitats_total}, "
+            f"tile={current_tile}, inventory rocks={rocks_count}, built habitats={habitats_total}, "
             f"hours_to_solar_flare={game_logic.HOURS_TO_SOLAR_FLARE}, "
             f"habitat_hourly_charge_active={habitat_hourly_charge_active}. "
             "Use these exact values. If you are unsure, ask to LookClose or LookFar rather than inventing state."
