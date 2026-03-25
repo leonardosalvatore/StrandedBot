@@ -470,6 +470,15 @@ def build_ollama_tools(
     ]
 
 
+# Every scenario gets this so the model does not invent a "wiring" troubleshooting loop.
+_POWER_GRID_RULES_FOR_LLM = (
+    "Power works only through orthogonal adjacency of habitat, battery, and solar_panel tiles on the grid. "
+    "There is no wiring, cables, or separate connect step. "
+    "Do not plan or narrate verifying, tracing, or fixing wiring or electrical connections, "
+    "and do not use LookClose/LookFar for that purpose.\n"
+)
+
+
 def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
     habitat_rocks_required = game_logic.ROCKS_REQUIRED_FOR_HABITAT
     battery_rocks_required = game_logic.ROCKS_REQUIRED_FOR_BATTERY
@@ -478,15 +487,16 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
     scenario_norm = str(scenario).strip()
 
     common_tail = (
-        "\n"
+        "END OF YOUR MISSION DEFINITIONS\n"
     )
     common_head = (" YOUR MISSION:\n"
-            "Stay in an habitat if the energy is below 200 to avoid solar flare damage.")
+            "Stay in an habitat if the energy is below 200 to avoid solar flare damage,")
 
     if scenario_norm == "Tower Defense":
         return (
             common_head +
-            "Expand building habitats, batteries, solar panels, and turrets. "
+            " build more turrets.\n"
+            + _POWER_GRID_RULES_FOR_LLM
             + common_tail
         ).strip()
 
@@ -494,7 +504,8 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
         return (
             common_head +
             "Expand habitats to build a big town. Create habitats, batteries, and solar panels in expanding clusters.\n"
-            "Never go back to verify solar wiring; keep pushing expansion forward.\n"
+            "Keep pushing expansion forward instead of revisiting old tiles to diagnose power.\n"
+            + _POWER_GRID_RULES_FOR_LLM
             + common_tail
         ).strip()
 
@@ -503,7 +514,7 @@ def build_base_prompt(game_logic: Any, scenario: str = "Explorer") -> str:
         common_head +
         "Explore the map. Build habitat and the required solar+storage network only to recharge. "
         "Keep moving forward instead of looping.\n"
-        "Never go back to verify solar wiring; keep exploring and building new settlements.\n"
+        + _POWER_GRID_RULES_FOR_LLM
         + common_tail
     ).strip()
 
@@ -524,7 +535,8 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
                 "Use native tool calls with the provided tools. "
                 "Do not print tool invocations as text, JSON, or ToolName[ARGS]{...} unless native tool calling fails. "
                 "Do not claim a state change until a tool result confirms it. "
-                "Dig removes exactly one rock per tool call; gather several rocks with several Dig calls (and MoveTo other rocks tiles after each Dig)."
+                "Dig removes exactly one rock per tool call; gather several rocks with several Dig calls (and MoveTo other rocks tiles after each Dig). "
+                "The world has no wiring or cable mechanic—only tile adjacency for power networks; never treat habitat_hourly_charge_active as a cue to verify wiring."
             ),
         },
         {"role": "user", "content": prompt_text},
@@ -584,8 +596,9 @@ def run_ollama_play_loop(game_logic: Any, model: str, initial_prompt: str | None
             f"hour={game_logic.bot_hour_count}, energy={game_logic.bot_energy}, position=({gx},{gy}), "
             f"tile={current_tile}, inventory rocks={rocks_count}, built habitats={habitats_total}, "
             f"hours_to_solar_flare={game_logic.HOURS_TO_SOLAR_FLARE}, "
-            f"habitat_hourly_charge_active={habitat_hourly_charge_active}. "
-            "Use these exact values. If you are unsure, ask to LookClose or LookFar rather than inventing state."
+            f"habitat_hourly_charge_active={habitat_hourly_charge_active} "
+            "(True iff you stand on a habitat in one orthogonal component with ≥1 solar_panel and ≥1 battery). "
+            "Use these exact values. If you are unsure about the map, use LookClose or LookFar rather than inventing tiles."
         )
 
         def _append_message(m: dict[str, Any]) -> None:
