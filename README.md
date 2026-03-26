@@ -2,6 +2,8 @@ Local LLM (Ollama) plays a small tile survival game: a robot gathers rocks, buil
 
 [Short video demo (YouTube)](https://youtu.be/esa-aX58YaI) · ![Screenshot](bots/resources/screenshot.jpg)
 
+The planet is procedurally generated, and while simulation parameters can be fully customized, three presets are available: Tower Defense, Builder, and Explorer.
+
 [Short video demo in tower defense mode (YouTube)](https://youtu.be/aLs3Lp73xuk)
 
 
