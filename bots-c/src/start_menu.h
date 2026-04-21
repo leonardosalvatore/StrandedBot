@@ -12,7 +12,6 @@ typedef enum {
 typedef struct {
     bool started;
     Scenario scenario;
-    char model[256];
     int  rocks_amount;
     int  initial_town_size;
     int  energy;
@@ -23,7 +22,7 @@ typedef struct {
     char custom_prompt[4096];
 } StartMenuResult;
 
-void             start_menu_init(const char *default_model);
+void             start_menu_init(void);
 bool             start_menu_update(void);   /* true while menu is active */
 StartMenuResult  start_menu_result(void);
 

@@ -133,6 +133,17 @@ bool gl_advance_solar_flare_hour(int current_hour);
 void gl_apply_solar_flare_interval(int hours);
 void gl_apply_initial_town_size(int n);
 bool gl_bot_habitat_network_charge_active(void);
+/* Detailed status of the power-network at the bot's current tile.
+ * Every out-pointer may be NULL; callers typically use this to explain
+ * WHY charging is inactive.
+ *   on_habitat   - bot is standing on a TILE_HABITAT
+ *   has_battery  - the orthogonally-connected structure cluster contains
+ *                  at least one TILE_BATTERY (false if on_habitat is false)
+ *   has_solar    - same for TILE_SOLAR_PANEL
+ * Charging is active iff all three are true. */
+void gl_bot_charge_network_status(bool *on_habitat,
+                                  bool *has_battery,
+                                  bool *has_solar);
 void gl_print_hour_status(void);
 
 /* Color lookup */

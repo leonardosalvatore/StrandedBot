@@ -1,5 +1,6 @@
 #include "game_logic.h"
 #include "message_log.h"
+#include "particles.h"
 #include "raylib.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -358,27 +359,37 @@ void gl_initialize_world(bool use_fog, int rocks_target) {
 }
 
 /* ── Power network check (BFS) ───────────────────────────────────────────── */
-static bool habitat_on_solar_network(int gx, int gy) {
+/* BFS the connected habitat+battery+solar_panel cluster containing (gx,gy)
+ * and report which of those three roles are present. Caller must ensure the
+ * out-pointers are non-NULL. */
+static void habitat_network_flags(int gx, int gy,
+                                  bool *out_on_habitat,
+                                  bool *out_has_battery,
+                                  bool *out_has_solar) {
+    *out_on_habitat = false;
+    *out_has_battery = false;
+    *out_has_solar = false;
+
     pthread_mutex_lock(&gl_tiles_lock);
     if (gx < 0 || gx >= GRID_WIDTH || gy < 0 || gy >= GRID_HEIGHT ||
         gl_tile_matrix[gx][gy].type != TILE_HABITAT) {
         pthread_mutex_unlock(&gl_tiles_lock);
-        return false;
+        return;
     }
+    *out_on_habitat = true;
     static int qx[GRID_WIDTH * GRID_HEIGHT], qy[GRID_WIDTH * GRID_HEIGHT];
     static bool visited[GRID_WIDTH][GRID_HEIGHT];
     memset(visited, 0, sizeof(visited));
     int head = 0, tail = 0;
     qx[tail] = gx; qy[tail] = gy; tail++;
     visited[gx][gy] = true;
-    bool has_battery = false, has_solar = false;
     static const int dx4[] = {1, -1, 0, 0};
     static const int dy4[] = {0, 0, 1, -1};
     while (head < tail) {
         int cx = qx[head], cy = qy[head]; head++;
         TileType tt = gl_tile_matrix[cx][cy].type;
-        if (tt == TILE_BATTERY)     has_battery = true;
-        if (tt == TILE_SOLAR_PANEL) has_solar   = true;
+        if (tt == TILE_BATTERY)     *out_has_battery = true;
+        if (tt == TILE_SOLAR_PANEL) *out_has_solar   = true;
         for (int d = 0; d < 4; d++) {
             int nx = cx + dx4[d], ny = cy + dy4[d];
             if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) continue;
@@ -391,13 +402,30 @@ static bool habitat_on_solar_network(int gx, int gy) {
         }
     }
     pthread_mutex_unlock(&gl_tiles_lock);
-    return has_battery && has_solar;
+}
+
+static bool habitat_on_solar_network(int gx, int gy) {
+    bool on_habitat, has_battery, has_solar;
+    habitat_network_flags(gx, gy, &on_habitat, &has_battery, &has_solar);
+    return on_habitat && has_battery && has_solar;
 }
 
 bool gl_bot_habitat_network_charge_active(void) {
     int gx, gy;
     gl_bot_grid_pos(&gx, &gy);
     return habitat_on_solar_network(gx, gy);
+}
+
+void gl_bot_charge_network_status(bool *on_habitat,
+                                  bool *has_battery,
+                                  bool *has_solar) {
+    bool oh, hb, hs;
+    int gx, gy;
+    gl_bot_grid_pos(&gx, &gy);
+    habitat_network_flags(gx, gy, &oh, &hb, &hs);
+    if (on_habitat)  *on_habitat  = oh;
+    if (has_battery) *has_battery = hb;
+    if (has_solar)   *has_solar   = hs;
 }
 
 static void apply_habitat_network_charge(void) {
@@ -456,9 +484,15 @@ bool gl_advance_solar_flare_hour(int current_hour) {
     gl_solar_flare_animation_start_time = GetTime();
     gl_hours_to_solar_flare = gl_hours_solar_flare_every;
 
+    /* Crackle around the bot for the flash duration. */
+    float bx = gl_bot_x + TILE_SIZE / 2.0f;
+    float by = gl_bot_y + TILE_SIZE / 2.0f;
+    particles_spawn_flare_zap(bx, by);
+
     if (gl_bot_energy <= 0) {
         gl_bot_state = BOT_DESTROYED;
         msg_log("  [SolarFlare] Bot destroyed - out of energy!");
+        particles_spawn_destruction(bx, by);
         return false;
     }
     return true;
@@ -563,6 +597,11 @@ ToolResult gl_look_close(void) {
     pthread_mutex_unlock(&gl_tiles_lock);
     strncat(surrounding, "]", sizeof(surrounding) - strlen(surrounding) - 1);
 
+    /* Cyan scan ring, radius = 1.5 tiles in world units. */
+    particles_spawn_scan_pulse(gl_bot_x + TILE_SIZE / 2.0f,
+                               gl_bot_y + TILE_SIZE / 2.0f,
+                               (float)TILE_SIZE * 1.8f);
+
     msg_log("  [LookClose] Bot at (%d,%d)", gx, gy);
     tool_result_ok(&res);
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
@@ -640,6 +679,11 @@ ToolResult gl_look_far(void) {
     }
     strncat(features, "]", sizeof(features) - strlen(features) - 1);
 
+    /* Big cyan scan ring, radius = gl_bot_lookfar_distance tiles. */
+    particles_spawn_scan_pulse(gl_bot_x + TILE_SIZE / 2.0f,
+                               gl_bot_y + TILE_SIZE / 2.0f,
+                               (float)(radius * TILE_SIZE));
+
     msg_log("  [LookFar] radius %d from (%d,%d)", radius, gx, gy);
     tool_result_ok(&res);
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
@@ -672,6 +716,8 @@ ToolResult gl_dig(void) {
     }
     create_tile(gx, gy, TILE_GRAVEL);
     gl_bot_inventory_rocks++;
+    particles_spawn_dig_dust((float)gx * TILE_SIZE + TILE_SIZE / 2.0f,
+                             (float)gy * TILE_SIZE + TILE_SIZE / 2.0f);
     msg_log("  [Dig] Rock at (%d,%d)! Inventory: %d", gx, gy, gl_bot_inventory_rocks);
     tool_result_ok(&res);
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
@@ -726,6 +772,8 @@ ToolResult gl_create(const char *tile_type_str) {
 
     gl_bot_inventory_rocks -= cost;
     create_tile(gx, gy, want);
+    particles_spawn_build_sparkle((float)gx * TILE_SIZE + TILE_SIZE / 2.0f,
+                                  (float)gy * TILE_SIZE + TILE_SIZE / 2.0f);
 
     pthread_mutex_lock(&gl_built_lock);
     if (gl_bot_built_count < MAX_BUILT_TILES) {
@@ -738,12 +786,25 @@ ToolResult gl_create(const char *tile_type_str) {
     msg_log("  [Create] Built %s at (%d,%d). Rocks left: %d",
             tile_type_name(want), gx, gy, gl_bot_inventory_rocks);
     tool_result_ok(&res);
+    /* Warn loudly if the bot just consumed a rocks tile: without this, small
+     * models keep referencing the old LookFar result that called this
+     * coordinate "rocks" and try to come back here to Dig. */
+    char note[192] = "";
+    if (cur == TILE_ROCKS) {
+        snprintf(note, sizeof(note),
+            ",\"note\":\"This tile was 'rocks' and is now '%s'. It cannot be"
+            " dug anymore. Any older LookFar data calling (%d,%d) 'rocks' is"
+            " stale.\"",
+            tile_type_name(want), gx, gy);
+    }
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
         "{\"ok\":true,\"tile_created\":\"%s\",\"tile_x\":%d,\"tile_y\":%d,"
+        "\"previous_tile_type\":\"%s\","
         "\"rocks_consumed\":%d,\"rocks_in_inventory\":%d,"
-        "\"energy\":%d,\"hours_to_solar_flare\":%d}",
-        tile_type_name(want), gx, gy, cost, gl_bot_inventory_rocks,
-        gl_bot_energy, gl_hours_to_solar_flare);
+        "\"energy\":%d,\"hours_to_solar_flare\":%d%s}",
+        tile_type_name(want), gx, gy, tile_type_name(cur),
+        cost, gl_bot_inventory_rocks,
+        gl_bot_energy, gl_hours_to_solar_flare, note);
     return res;
 }
 
@@ -785,6 +846,9 @@ void gl_print_hour_status(void) {
 
 /* ── Frame update ────────────────────────────────────────────────────────── */
 void gl_update(float dt) {
+    static float move_dust_accum   = 0.0f;
+    static float charge_spark_accum = 0.0f;
+
     float diff_x = gl_bot_target_x - gl_bot_x;
     float diff_y = gl_bot_target_y - gl_bot_y;
     float dist = sqrtf(diff_x * diff_x + diff_y * diff_y);
@@ -798,13 +862,29 @@ void gl_update(float dt) {
             gl_bot_x += (diff_x / dist) * step;
             gl_bot_y += (diff_y / dist) * step;
         }
+        /* Drop a small dust puff every ~0.08s while moving. */
+        move_dust_accum += dt;
+        if (move_dust_accum >= 0.08f) {
+            move_dust_accum = 0.0f;
+            particles_spawn_move_dust(gl_bot_x + TILE_SIZE / 2.0f,
+                                      gl_bot_y + TILE_SIZE / 2.0f);
+        }
     } else if (gl_bot_state == BOT_MOVING) {
         gl_bot_state = BOT_WAITING;
+        move_dust_accum = 0.0f;
     }
 
     if (gl_bot_state == BOT_CHARGING) {
+        charge_spark_accum += dt;
+        if (charge_spark_accum >= 0.12f) {
+            charge_spark_accum = 0.0f;
+            particles_spawn_charge_spark(gl_bot_x + TILE_SIZE / 2.0f,
+                                         gl_bot_y + TILE_SIZE / 2.0f);
+        }
         double now = GetTime();
         if (now >= gl_charging_animation_until)
             gl_bot_state = BOT_WAITING;
+    } else {
+        charge_spark_accum = 0.0f;
     }
 }

@@ -36,6 +36,8 @@ add_executable(bots
     src/main.c
     src/game_logic.c
     src/rendering.c
+    src/particles.c
+    src/ui_theme.c
     src/start_menu.c
     src/llm_agent.c
     src/message_log.c

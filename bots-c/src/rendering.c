@@ -1,5 +1,6 @@
 #include "rendering.h"
 #include "message_log.h"
+#include "particles.h"
 #include <math.h>
 #include <string.h>
 
@@ -11,11 +12,14 @@ static bool      bot_sprite_loaded = false;
 static const int bot_state_col[] = {
     [BOT_WAITING]   = 0, [BOT_THINKING]  = 1, [BOT_MOVING]    = 2,
     [BOT_LOOKCLOSE] = 0, [BOT_LOOKFAR]   = 1, [BOT_CHARGING]  = 2,
+    [BOT_DESTROYED] = 0,
 };
 static const int bot_state_row[] = {
     [BOT_WAITING]   = 0, [BOT_THINKING]  = 0, [BOT_MOVING]    = 0,
     [BOT_LOOKCLOSE] = 1, [BOT_LOOKFAR]   = 1, [BOT_CHARGING]  = 1,
+    [BOT_DESTROYED] = 0,
 };
+#define BOT_STATE_SPRITES ((int)(sizeof(bot_state_col) / sizeof(bot_state_col[0])))
 
 /* ── Tile atlas (tiles.png) ──────────────────────────────────────────────── */
 /* 4x2 grid of 150x150 cells. TileType → (col,row) below. */
@@ -76,7 +80,11 @@ void rendering_init(void) {
     };
     tiles_atlas = try_load(tile_paths, "Tiles");
     tiles_atlas_loaded = tiles_atlas.id != 0;
-    if (tiles_atlas_loaded) SetTextureFilter(tiles_atlas, TEXTURE_FILTER_BILINEAR);
+    /* Point filter on the tile atlas: bilinear sampling at the border of each
+     * 150x150 cell bleeds pixels from the neighbouring cell, which shows up as
+     * wrong-colour seams between tiles (most visible on water/sand edges).
+     * Point filtering stops the cross-cell interpolation cold. */
+    if (tiles_atlas_loaded) SetTextureFilter(tiles_atlas, TEXTURE_FILTER_POINT);
 }
 
 void rendering_unload(void) {
@@ -85,15 +93,15 @@ void rendering_unload(void) {
 }
 
 /* ── Camera input handling ───────────────────────────────────────────────── */
-static void update_camera_input(Camera2D *camera, float base_scale,
-                                float bot_cx, float bot_cy) {
+/* Updates cam_pan_x/y/zoom from input. No Camera2D is needed here; the caller
+ * builds the Camera2D from the final state after this returns. */
+static void update_camera_input(float base_scale, float bot_cx, float bot_cy,
+                                Vector2 offset) {
     /* Reset. */
     if (IsKeyPressed(KEY_HOME) || IsKeyPressed(KEY_R)) {
         cam_pan_x = cam_pan_y = 0.0f;
         cam_zoom = 1.0f;
         cam_panning = false;
-        camera->target = (Vector2){bot_cx, bot_cy};
-        camera->zoom = base_scale;
         return;
     }
 
@@ -101,22 +109,27 @@ static void update_camera_input(Camera2D *camera, float base_scale,
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
         Vector2 m = GetMousePosition();
-        Vector2 world_before = GetScreenToWorld2D(m, *camera);
+        float old_zoom = base_scale * cam_zoom;
+        /* Inverse of Camera2D projection (rotation = 0):
+         *   world = (screen - offset) / zoom + target
+         * where target = (bot_cx + cam_pan_x, bot_cy + cam_pan_y). */
+        float world_before_x = (m.x - offset.x) / old_zoom + bot_cx + cam_pan_x;
+        float world_before_y = (m.y - offset.y) / old_zoom + bot_cy + cam_pan_y;
 
         float new_mul = (wheel > 0) ? cam_zoom * CAM_ZOOM_STEP
                                     : cam_zoom / CAM_ZOOM_STEP;
         if (new_mul < CAM_ZOOM_MIN) new_mul = CAM_ZOOM_MIN;
         if (new_mul > CAM_ZOOM_MAX) new_mul = CAM_ZOOM_MAX;
         cam_zoom = new_mul;
-        camera->zoom = base_scale * cam_zoom;
 
-        /* Move target so the pre-zoom world point stays under the cursor. */
-        Vector2 tgt;
-        tgt.x = world_before.x - (m.x - camera->offset.x) / camera->zoom;
-        tgt.y = world_before.y - (m.y - camera->offset.y) / camera->zoom;
-        cam_pan_x = tgt.x - bot_cx;
-        cam_pan_y = tgt.y - bot_cy;
-        camera->target = tgt;
+        /* Solve for new pan so the pre-zoom world point stays under the cursor. */
+        float new_zoom = base_scale * cam_zoom;
+        cam_pan_x = world_before_x - (m.x - offset.x) / new_zoom - bot_cx;
+        cam_pan_y = world_before_y - (m.y - offset.y) / new_zoom - bot_cy;
+
+        /* If a drag is in progress, reset its anchor so the next delta is
+         * computed relative to the post-zoom mouse position. */
+        if (cam_panning) cam_pan_anchor = m;
     }
 
     /* Right/middle drag to pan. */
@@ -130,12 +143,10 @@ static void update_camera_input(Camera2D *camera, float base_scale,
     }
     if (cam_panning && drag_held) {
         Vector2 m = GetMousePosition();
-        float dx = (m.x - cam_pan_anchor.x) / camera->zoom;
-        float dy = (m.y - cam_pan_anchor.y) / camera->zoom;
-        cam_pan_x -= dx;
-        cam_pan_y -= dy;
+        float zoom = base_scale * cam_zoom;
+        cam_pan_x -= (m.x - cam_pan_anchor.x) / zoom;
+        cam_pan_y -= (m.y - cam_pan_anchor.y) / zoom;
         cam_pan_anchor = m;
-        camera->target = (Vector2){bot_cx + cam_pan_x, bot_cy + cam_pan_y};
     }
     if (!drag_held) cam_panning = false;
 }
@@ -144,17 +155,31 @@ static void update_camera_input(Camera2D *camera, float base_scale,
 void draw_game(void) {
     ClearBackground(BLACK);
 
-    float bot_cx = gl_bot_x + TILE_SIZE / 2.0f;
-    float bot_cy = gl_bot_y + TILE_SIZE / 2.0f;
+    /* Snapshot globals that the agent/logic threads can mutate, so the whole
+     * frame sees a consistent view. gl_tiles_lock is the documented guard for
+     * all shared world state (see game_logic.h). */
+    pthread_mutex_lock(&gl_tiles_lock);
+    float    snap_bot_x        = gl_bot_x;
+    float    snap_bot_y        = gl_bot_y;
+    BotState snap_state        = gl_bot_state;
+    bool     snap_flare_active = gl_solar_flare_animation_active;
+    double   snap_flare_start  = gl_solar_flare_animation_start_time;
+    pthread_mutex_unlock(&gl_tiles_lock);
+
+    float bot_cx = snap_bot_x + TILE_SIZE / 2.0f;
+    float bot_cy = snap_bot_y + TILE_SIZE / 2.0f;
     float base_scale = (float)DRAW_TILE_SIZE / TILE_SIZE;
+    Vector2 cam_offset = { WIN_WIDTH * 0.5f, WIN_HEIGHT * 0.5f };
+
+    /* Update pan/zoom state from input before building the Camera2D. */
+    update_camera_input(base_scale, bot_cx, bot_cy, cam_offset);
 
     Camera2D camera = {
-        .offset   = { WIN_WIDTH * 0.5f, WIN_HEIGHT * 0.5f },
+        .offset   = cam_offset,
         .target   = { bot_cx + cam_pan_x, bot_cy + cam_pan_y },
         .rotation = 0.0f,
         .zoom     = base_scale * cam_zoom,
     };
-    update_camera_input(&camera, base_scale, bot_cx, bot_cy);
 
     BeginMode2D(camera);
 
@@ -173,20 +198,33 @@ void draw_game(void) {
     /* All tiles share a single texture → raylib batches them into one
      * GPU draw call. If tiles.png failed to load, nothing is drawn here. */
     if (tiles_atlas_loaded) {
+        /* Two anti-seam tricks for atlases drawn through a Camera2D:
+         *   1. src inset by 0.5 px: even with POINT filtering, sampling right
+         *      at x = col*150 can nudge into the previous atlas column at
+         *      certain zoom levels. A half-pixel margin is invisible for
+         *      150-px art and eliminates the bleed.
+         *   2. dst bleed by 1 world unit: adjacent tiles share an edge that
+         *      rasterises differently on either side at non-integer zoom,
+         *      leaving 1-pixel gaps. Inflating each dst by +1 unit makes
+         *      neighbours overlap by 1 world pixel so there's no gap. */
+        const float SRC_INSET = 0.5f;
+        const float DST_BLEED = 1.0f;
         pthread_mutex_lock(&gl_tiles_lock);
         for (int tx = tx_start; tx < tx_end; tx++) {
             for (int ty = ty_start; ty < ty_end; ty++) {
                 Tile *t = &gl_tile_matrix[tx][ty];
                 TileType tt = (t->type < TILE_TYPE_COUNT) ? t->type : TILE_GRAVEL;
                 Rectangle src = {
-                    (float)(tile_col[tt] * TILES_CELL_PX),
-                    (float)(tile_row[tt] * TILES_CELL_PX),
-                    (float)TILES_CELL_PX,
-                    (float)TILES_CELL_PX,
+                    (float)(tile_col[tt] * TILES_CELL_PX) + SRC_INSET,
+                    (float)(tile_row[tt] * TILES_CELL_PX) + SRC_INSET,
+                    (float)TILES_CELL_PX - 2.0f * SRC_INSET,
+                    (float)TILES_CELL_PX - 2.0f * SRC_INSET,
                 };
                 Rectangle dst = {
-                    (float)(tx * TILE_SIZE), (float)(ty * TILE_SIZE),
-                    (float)TILE_SIZE, (float)TILE_SIZE,
+                    (float)(tx * TILE_SIZE),
+                    (float)(ty * TILE_SIZE),
+                    (float)TILE_SIZE + DST_BLEED,
+                    (float)TILE_SIZE + DST_BLEED,
                 };
                 Color tint = t->fog ? (Color){85, 85, 85, 255} : WHITE;
                 DrawTexturePro(tiles_atlas, src, dst, (Vector2){0, 0},
@@ -200,11 +238,18 @@ void draw_game(void) {
      * If bots.png failed to load, nothing is drawn here. */
     if (bot_sprite_loaded) {
         float bot_draw_world = (float)BOT_RADIUS * 1.5f;
-        int col = bot_state_col[gl_bot_state < BOT_STATE_COUNT ? gl_bot_state : 0];
-        int row = bot_state_row[gl_bot_state < BOT_STATE_COUNT ? gl_bot_state : 0];
+        int idx = ((int)snap_state >= 0 && (int)snap_state < BOT_STATE_SPRITES)
+                      ? (int)snap_state : 0;
+        int col = bot_state_col[idx];
+        int row = bot_state_row[idx];
+        /* 1-px inset avoids bilinear sampling from the neighbouring sprite
+         * cell (was showing up as a faint halo around the bot). */
+        const float BOT_SRC_INSET = 1.0f;
         Rectangle src = {
-            (float)(col * BOT_SPRITE_SIZE), (float)(row * BOT_SPRITE_SIZE),
-            (float)BOT_SPRITE_SIZE, (float)BOT_SPRITE_SIZE,
+            (float)(col * BOT_SPRITE_SIZE) + BOT_SRC_INSET,
+            (float)(row * BOT_SPRITE_SIZE) + BOT_SRC_INSET,
+            (float)BOT_SPRITE_SIZE - 2.0f * BOT_SRC_INSET,
+            (float)BOT_SPRITE_SIZE - 2.0f * BOT_SRC_INSET,
         };
         Rectangle dst = {
             bot_cx - bot_draw_world / 2.0f,
@@ -214,13 +259,18 @@ void draw_game(void) {
         DrawTexturePro(bot_sprite, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
     }
 
+    /* Particle effects drawn on top of tiles & bot, still in world space. */
+    particles_draw_world();
+
     EndMode2D();
 
     /* Solar flare flash — screen space, outside the camera transform. */
-    if (gl_solar_flare_animation_active) {
-        double elapsed = GetTime() - gl_solar_flare_animation_start_time;
+    if (snap_flare_active) {
+        double elapsed = GetTime() - snap_flare_start;
         if (elapsed >= 2.0) {
+            pthread_mutex_lock(&gl_tiles_lock);
             gl_solar_flare_animation_active = false;
+            pthread_mutex_unlock(&gl_tiles_lock);
         } else {
             double cycle = fmod(elapsed, 0.2) / 0.2;
             if (cycle < 0.5) {

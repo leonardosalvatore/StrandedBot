@@ -6,8 +6,7 @@
 
 #define LLM_DEFAULT_URL "http://localhost:8080/v1/chat/completions"
 
-void llm_agent_start(const char *model, const char *initial_prompt,
-                     bool interactive_mode);
+void llm_agent_start(const char *initial_prompt, bool interactive_mode);
 void llm_agent_stop(void);
 bool llm_agent_running(void);
 

@@ -221,10 +221,6 @@ static cJSON *build_tools_json(void) {
         cJSON_AddItemToArray(req, cJSON_CreateString("target_y"));
     });
 
-    ADD_TOOL("LookClose",
-        "Look around: returns 3x3 tiles surrounding the bot. Costs 1 energy.",
-        { /* no params */ });
-
     char lf_desc[256];
     snprintf(lf_desc, sizeof(lf_desc),
         "Wide scan radius %d tiles. Returns notable features with coords and distance. "
@@ -236,10 +232,13 @@ static cJSON *build_tools_json(void) {
         "Tile becomes gravel. Costs 1 energy.",
         { /* no params */ });
 
-    char cr_desc[256];
+    char cr_desc[384];
     snprintf(cr_desc, sizeof(cr_desc),
-        "Create a structure on current tile. Costs: habitat=%d, battery=%d, solar_panel=%d rocks. "
-        "Cannot build on water/broken_habitat/existing structures. Costs 1 energy.",
+        "Create a structure on your CURRENT tile. "
+        "Valid ground: gravel, sand, or rocks. "
+        "Invalid ground: water, broken_habitat, or any tile that already has "
+        "a structure. "
+        "Rock cost: habitat=%d, battery=%d, solar_panel=%d. Also costs 1 energy.",
         ROCKS_REQUIRED_FOR_HABITAT, ROCKS_REQUIRED_FOR_BATTERY, ROCKS_REQUIRED_FOR_SOLAR_PANEL);
     ADD_TOOL("Create", cr_desc, {
         cJSON *tt = cJSON_CreateObject();
@@ -264,6 +263,11 @@ static char *llm_chat(cJSON *messages_json, cJSON *tools_json) {
     cJSON_AddItemToObject(body, "messages", cJSON_Duplicate(messages_json, 1));
     if (tools_json)
         cJSON_AddItemToObject(body, "tools", cJSON_Duplicate(tools_json, 1));
+    /* Reserve enough budget for reasoning models to think AND produce a final
+     * reply + tool call. Without this, llama-server's default can clip the
+     * answer mid-sentence once the thinking trace is long. */
+    cJSON_AddNumberToObject(body, "max_tokens", 2048);
+    cJSON_AddNumberToObject(body, "temperature", 0.4);
 
     char *json_str = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
@@ -419,10 +423,6 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
         gl_bot_state = BOT_MOVING;
         return gl_move_to(tx, ty);
     }
-    if (strcmp(name, "LookClose") == 0) {
-        gl_bot_state = BOT_LOOKCLOSE;
-        return gl_look_close();
-    }
     if (strcmp(name, "LookFar") == 0) {
         gl_bot_state = BOT_LOOKFAR;
         return gl_look_far();
@@ -446,10 +446,62 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
     return r;
 }
 
-/* ── Build base prompt (mirrors Python build_base_prompt) ────────────────── */
+/* ── Base system prompt: rules that never change across scenarios ────────── */
+/* Derived from observed failure modes of small local models:
+ *   - calling MoveTo with current coordinates (no-op, wastes an hour)
+ *   - re-calling LookFar every turn instead of acting on the previous scan
+ *   - chasing tiles (sand/gravel/water) that have no mechanical use
+ *   - verbose multi-paragraph replies that overflow max_tokens and clip
+ *     the trailing tool-call arguments. */
+static const char *SYSTEM_PROMPT =
+    "You are the operator of a single autonomous robot on a tile grid. "
+    "You act by calling ONE tool per turn via native tool_calls.\n"
+    "\n"
+    "OUTPUT STYLE (strict):\n"
+    "- Reply in AT MOST 2 short sentences, then emit exactly ONE tool call.\n"
+    "- Never print tool calls as text or pseudo-JSON; use the tool_calls channel.\n"
+    "- Never restate the telemetry the system already gave you.\n"
+    "- No numbered 'Next Steps' lists, no headings, no markdown.\n"
+    "\n"
+    "HARD RULES:\n"
+    "- Trust the SYSTEM STATUS line; it is ground truth.\n"
+    "- Never call MoveTo with target equal to your current (x,y). Read the\n"
+    "  position from SYSTEM STATUS before picking a target.\n"
+    "- LookFar has radius 40 and reveals the nearest feature of every type.\n"
+    "  Its results remain valid until you move more than ~15 tiles. Do NOT\n"
+    "  call LookFar again within that radius — pick a target from the\n"
+    "  previous LookFar result instead.\n"
+    "- MoveTo can travel up to the tool's max tiles in one call. Prefer big\n"
+    "  jumps to distant targets over 1-tile steps.\n"
+    "- Dig is only useful when you need more rocks for a PLANNED Create.\n"
+    "  Rocks have no value beyond building, so don't hoard past what your\n"
+    "  plan requires. Dig once per rocks tile; the tile becomes gravel.\n"
+    "- Create works on any tile where SYSTEM STATUS says\n"
+    "  current_tile_buildable=true (that's gravel, sand, or rocks). There is\n"
+    "  no 'better' tile. If current_tile_buildable=true AND you have enough\n"
+    "  rocks for the thing you want, Create NOW; do not wander to find a\n"
+    "  different tile.\n"
+    "- Power requires ONLY orthogonal adjacency of habitat + battery +\n"
+    "  solar_panel tiles. There is no wiring, no cabling, no 'connect' step.\n"
+    "  Don't plan or narrate verifying wiring.\n"
+    "- 'Orthogonally adjacent' means the Manhattan distance is EXACTLY 1:\n"
+    "  |dx|+|dy|=1. So (100,137) is adjacent to (99,137), (101,137),\n"
+    "  (100,136), (100,138) — and NOT to (99,136), (104,136), etc.\n"
+    "  A solar_panel 2+ tiles from the battery contributes NOTHING; the\n"
+    "  network will not charge. When you extend a cluster, MoveTo a tile\n"
+    "  where |dx|+|dy|=1 from the last placed structure BEFORE calling\n"
+    "  Create.\n"
+    "- Dig and Create DESTROY the source tile: after Dig the tile is\n"
+    "  gravel; after Create on a rocks tile the tile is the structure. A\n"
+    "  coordinate that LookFar once reported as 'rocks' is no longer rocks\n"
+    "  if you have already acted on it. Trust the most recent tool results,\n"
+    "  not old LookFar memory.\n"
+    "- If energy drops below 200, get onto a habitat tile and stay there\n"
+    "  until recharged.";
+
 static const char *POWER_GRID_RULES =
-    "Power works only through orthogonal adjacency of habitat, battery, and solar_panel tiles. "
-    "There is no wiring or connect step. Do not plan or narrate verifying wiring.";
+    "Power works only through orthogonal adjacency of habitat, battery, and "
+    "solar_panel tiles. There is no wiring or connect step.";
 
 static void build_base_prompt(char *out, size_t cap, int scenario) {
     const char *head =
@@ -519,10 +571,7 @@ static void *agent_loop(void *arg) {
     /* Messages were already seeded by llm_agent_start (system + user prompt).
      * If somehow empty, add a fallback. */
     if (msg_count < 2) {
-        append_msg("system",
-            "Use native tool calls with the provided tools. "
-            "Dig removes exactly one rock per call. "
-            "The world has no wiring mechanic—only tile adjacency.", 0);
+        append_msg("system", SYSTEM_PROMPT, 0);
         char fallback[4096];
         build_base_prompt(fallback, sizeof(fallback), 0);
         append_msg("user", fallback, 0);
@@ -551,21 +600,59 @@ static void *agent_loop(void *arg) {
         /* Build status grounding */
         int gx, gy;
         gl_bot_grid_pos(&gx, &gy);
-        bool charge_active = gl_bot_habitat_network_charge_active();
+        bool charge_on_hab = false, charge_has_bat = false, charge_has_sol = false;
+        gl_bot_charge_network_status(&charge_on_hab, &charge_has_bat, &charge_has_sol);
+        bool charge_active = charge_on_hab && charge_has_bat && charge_has_sol;
         pthread_mutex_lock(&gl_tiles_lock);
-        const char *cur_tile = tile_type_name(gl_tile_matrix[gx][gy].type);
+        TileType cur_tile_type = gl_tile_matrix[gx][gy].type;
         pthread_mutex_unlock(&gl_tiles_lock);
-        char status[1024];
+        const char *cur_tile = tile_type_name(cur_tile_type);
+        /* Derived: can Create run here? Mirrors the checks in gl_create so
+         * the bot sees the answer directly instead of having to infer it
+         * from the tile name. Gravel, sand, and rocks are all valid; water,
+         * broken_habitat, and existing structures are not. */
+        bool cur_buildable = (cur_tile_type == TILE_GRAVEL ||
+                              cur_tile_type == TILE_SAND   ||
+                              cur_tile_type == TILE_ROCKS);
+        /* Build a human-readable reason when the network is not charging, so
+         * the bot doesn't have to deduce it from the prompt and current
+         * topology. Small models respond much more reliably to an explicit
+         * diagnosis than to a bare 'false'. */
+        char charge_field[192];
+        if (charge_active) {
+            snprintf(charge_field, sizeof(charge_field),
+                "habitat_hourly_charge_active=true");
+        } else if (!charge_on_hab) {
+            snprintf(charge_field, sizeof(charge_field),
+                "habitat_hourly_charge_active=false (reason: "
+                "bot not on a habitat tile)");
+        } else if (!charge_has_bat && !charge_has_sol) {
+            snprintf(charge_field, sizeof(charge_field),
+                "habitat_hourly_charge_active=false (reason: "
+                "habitat cluster has no battery AND no solar_panel "
+                "orthogonally connected; |dx|+|dy|=1 required)");
+        } else if (!charge_has_bat) {
+            snprintf(charge_field, sizeof(charge_field),
+                "habitat_hourly_charge_active=false (reason: "
+                "habitat cluster is missing a battery orthogonally "
+                "connected; |dx|+|dy|=1 required)");
+        } else {
+            snprintf(charge_field, sizeof(charge_field),
+                "habitat_hourly_charge_active=false (reason: "
+                "habitat cluster is missing a solar_panel orthogonally "
+                "connected; |dx|+|dy|=1 required)");
+        }
+        char status[1280];
         snprintf(status, sizeof(status),
             "SYSTEM STATUS (truth source): hour=%d, energy=%d, position=(%d,%d), "
-            "tile=%s, inventory_rocks=%d, "
-            "hours_to_solar_flare=%d, "
-            "habitat_hourly_charge_active=%s",
+            "tile=%s, current_tile_buildable=%s, inventory_rocks=%d, "
+            "hours_to_solar_flare=%d, %s",
             gl_bot_hour_count, gl_bot_energy, gx, gy,
             cur_tile,
+            cur_buildable ? "true" : "false",
             gl_bot_inventory_rocks,
             gl_hours_to_solar_flare,
-            charge_active ? "true" : "false");
+            charge_field);
 
         /* Persist status grounding as a user message in history so subsequent
          * turns see a clean user/assistant alternation (required by mistral
@@ -648,7 +735,7 @@ static void *agent_loop(void *arg) {
             gl_bot_state = BOT_WAITING;
             msg_log("  [System] No tool call; nudging bot.");
             append_msg("user",
-                "Keep exploring! Use LookClose or MoveTo. "
+                "Keep exploring! Use LookFar or MoveTo. "
                 "Emit a native tool call via the tools API, "
                 "not a JSON code block.",
                 hour);
@@ -732,21 +819,19 @@ done:
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
-void llm_agent_start(const char *model, const char *initial_prompt,
-                     bool interactive_mode) {
+void llm_agent_start(const char *initial_prompt, bool interactive_mode) {
     if (agent_running_flag) return;
-    strncpy(agent_model, model, sizeof(agent_model) - 1);
+    /* llama.cpp's server ignores the "model" field (it serves whatever model
+       was loaded at startup), but the OpenAI-compatible schema requires the
+       field to exist. We send a fixed placeholder. */
+    strncpy(agent_model, "local", sizeof(agent_model) - 1);
     agent_interactive = interactive_mode;
     agent_running_flag = true;
 
     /* Reset messages and add initial prompt */
     msg_count = 0;
     if (initial_prompt && initial_prompt[0]) {
-        append_msg("system",
-            "Use native tool calls with the provided tools. "
-            "Do not print tool invocations as text. "
-            "Dig removes exactly one rock per call. "
-            "The world has no wiring mechanic—only tile adjacency.", 0);
+        append_msg("system", SYSTEM_PROMPT, 0);
         append_msg("user", initial_prompt, 0);
     }
 
