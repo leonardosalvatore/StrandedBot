@@ -519,6 +519,22 @@ ToolResult gl_move_to(int target_x, int target_y) {
     int start_gx, start_gy;
     gl_bot_grid_pos(&start_gx, &start_gy);
 
+    /* Reject no-op moves loudly. Small local models otherwise latch onto
+     * MoveTo(current_pos) -> ok:true as a "successful" action and loop on
+     * it indefinitely (observed: 17 consecutive self-moves on the habitat).
+     * Returning ok:false here forces the LLM to pick a different tool. */
+    if (start_gx == target_x && start_gy == target_y) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "Already at (%d,%d). MoveTo target must differ from current "
+                 "position; pick a different tool or a different target.",
+                 start_gx, start_gy);
+        tool_result_err(&res, buf);
+        msg_log("  [MoveTo] rejected no-op: already at (%d,%d)",
+                start_gx, start_gy);
+        return res;
+    }
+
     int dx = 0, dy = 0;
     if (start_gx != target_x) dx = (target_x > start_gx) ? 1 : -1;
     if (start_gy != target_y) dy = (target_y > start_gy) ? 1 : -1;

@@ -4,8 +4,37 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>     /* clock_gettime */
 #include <unistd.h>   /* readlink */
 #include <limits.h>   /* PATH_MAX */
+
+/* #region agent log (session a21715) */
+static void dbg_log(const char *hyp, const char *loc, const char *msg,
+                    const char *data_json) {
+    FILE *f = fopen("/mnt/Data/Dev/robots/bots/.cursor/debug-a21715.log", "a");
+    if (!f) return;
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    long long tms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    fprintf(f,
+        "{\"sessionId\":\"a21715\",\"runId\":\"broadwatch\","
+        "\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\","
+        "\"data\":%s,\"timestamp\":%lld}\n",
+        hyp, loc, msg, data_json ? data_json : "{}", tms);
+    fclose(f);
+}
+/* Escape backslashes and double-quotes for embedding a path into a JSON
+ * string literal. Writes at most out_cap-1 bytes plus terminator. */
+static void json_escape(const char *in, char *out, size_t out_cap) {
+    size_t j = 0;
+    for (size_t i = 0; in && in[i] && j + 2 < out_cap; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '\\' || c == '"') { out[j++] = '\\'; out[j++] = (char)c; }
+        else if (c < 0x20)         { /* skip control chars */ }
+        else                        { out[j++] = (char)c; }
+    }
+    out[j] = '\0';
+}
+/* #endregion */
 
 /* ── Bot sprite sheet (bots.png) ─────────────────────────────────────────── */
 static Texture2D bot_sprite = {0};
@@ -76,6 +105,18 @@ static Texture2D load_exe_relative(const char *filename, const char *label) {
     snprintf(full, sizeof(full), "%s/%s",
              exe_dir[0] ? exe_dir : ".", filename);
 
+    /* #region agent log (session a21715) */
+    {
+        char escaped[PATH_MAX * 2];
+        json_escape(full, escaped, sizeof(escaped));
+        char buf[PATH_MAX * 2 + 64];
+        snprintf(buf, sizeof(buf),
+                 "{\"label\":\"%s\",\"path\":\"%s\",\"exists\":%s}",
+                 label, escaped, FileExists(full) ? "true" : "false");
+        dbg_log("H1", "rendering.c:load_exe_relative",
+                "resolved_path", buf);
+    }
+    /* #endregion */
     if (!FileExists(full)) {
         msg_log("  [%s] spritesheet not found next to binary: %s",
                 label, full);
@@ -87,6 +128,16 @@ static Texture2D load_exe_relative(const char *filename, const char *label) {
     } else {
         msg_log("  [%s] Loaded spritesheet from %s", label, full);
     }
+    /* #region agent log (session a21715) */
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "{\"label\":\"%s\",\"tex_id\":%u,\"w\":%d,\"h\":%d}",
+                 label, tex.id, tex.width, tex.height);
+        dbg_log("H1", "rendering.c:load_exe_relative",
+                "load_result", buf);
+    }
+    /* #endregion */
     return tex;
 }
 

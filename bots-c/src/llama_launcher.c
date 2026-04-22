@@ -28,6 +28,22 @@
 #define LLAMA_HOST "127.0.0.1"
 #define LLAMA_PORT_DEFAULT 53425
 
+/* #region agent log (session a21715) */
+static void dbg_log(const char *hyp, const char *loc, const char *msg,
+                    const char *data_json) {
+    FILE *f = fopen("/mnt/Data/Dev/robots/bots/.cursor/debug-a21715.log", "a");
+    if (!f) return;
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    long long tms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    fprintf(f,
+        "{\"sessionId\":\"a21715\",\"runId\":\"broadwatch\","
+        "\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\","
+        "\"data\":%s,\"timestamp\":%lld}\n",
+        hyp, loc, msg, data_json ? data_json : "{}", tms);
+    fclose(f);
+}
+/* #endregion */
+
 static pid_t g_child_pid       = 0;
 static bool  g_atexit_registered = false;
 static bool  g_signals_installed  = false;
@@ -139,11 +155,24 @@ bool llama_launcher_port_open(void) {
  * together with the server. Signalling just the leader would leave children
  * reparented to init if the leader dies first. */
 void llama_launcher_stop(void) {
-    if (g_child_pid <= 0) return;
+    if (g_child_pid <= 0) {
+        /* #region agent log (session a21715) */
+        dbg_log("H5", "llama_launcher.c:stop",
+                "stop_noop_no_child", "{}");
+        /* #endregion */
+        return;
+    }
     pid_t pid = g_child_pid;
     g_child_pid = 0;
 
     TraceLog(LOG_INFO, "LLAMA: stopping llama-server (pgid %d)", (int)pid);
+    /* #region agent log (session a21715) */
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"pid\":%d}", (int)pid);
+        dbg_log("H5", "llama_launcher.c:stop", "stop_enter", buf);
+    }
+    /* #endregion */
 
     if (kill(-pid, SIGTERM) != 0 && errno != ESRCH) {
         /* Fall back to the leader only; some kernels reject -pid if the
@@ -157,13 +186,33 @@ void llama_launcher_stop(void) {
     for (int i = 0; i < 40; i++) {
         int status = 0;
         pid_t r = waitpid(pid, &status, WNOHANG);
-        if (r == pid || r < 0) return;
+        if (r == pid || r < 0) {
+            /* #region agent log (session a21715) */
+            {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "{\"pid\":%d,\"elapsed_ms\":%d,\"via\":\"SIGTERM\"}",
+                         (int)pid, i * 50);
+                dbg_log("H5", "llama_launcher.c:stop",
+                        "stop_child_exited", buf);
+            }
+            /* #endregion */
+            return;
+        }
         struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
         nanosleep(&ts, NULL);
     }
     kill(-pid, SIGKILL);
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
+    /* #region agent log (session a21715) */
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf),
+                 "{\"pid\":%d,\"via\":\"SIGKILL\"}", (int)pid);
+        dbg_log("H5", "llama_launcher.c:stop", "stop_sigkilled", buf);
+    }
+    /* #endregion */
 }
 
 /* ── Signal plumbing ──────────────────────────────────────────────────────── */
@@ -171,13 +220,37 @@ void llama_launcher_stop(void) {
  * exiting. We do this in a minimal async-signal-safe handler that just calls
  * kill() and then re-raises the signal with the default handler. */
 static void on_fatal_signal(int sig) {
+    /* #region agent log (session a21715) */
+    /* Async-signal-safe concern: fopen/fprintf aren't in the POSIX AS-safe
+     * list. In practice glibc stdio is reentrant-safe when no other thread
+     * is inside stdio on the same FILE*; since this log FILE* is per-call
+     * (opened fresh, closed before return) the risk is bounded. This is
+     * debug-only instrumentation. */
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"sig\":%d,\"pid\":%d}",
+                 sig, (int)g_child_pid);
+        dbg_log("H5", "llama_launcher.c:on_fatal_signal",
+                "signal_received", buf);
+    }
+    /* #endregion */
     if (g_child_pid > 0) {
         /* Signal the entire child process group so the bash wrapper AND the
          * exec'd llama-server (and any grandchildren) all receive SIGTERM. */
         pid_t pid = g_child_pid;
         g_child_pid = 0; /* prevent atexit from double-killing */
-        kill(-pid, SIGTERM);
-        kill(pid,  SIGTERM);
+        int r_pg = kill(-pid, SIGTERM);
+        int r_leader = kill(pid,  SIGTERM);
+        /* #region agent log (session a21715) */
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                     "{\"pid\":%d,\"kill_pgroup_rc\":%d,\"kill_leader_rc\":%d}",
+                     (int)pid, r_pg, r_leader);
+            dbg_log("H5", "llama_launcher.c:on_fatal_signal",
+                    "pgroup_signalled", buf);
+        }
+        /* #endregion */
     }
     /* Restore default and re-raise so the shell's exit code reflects the
      * original signal. */
@@ -265,11 +338,29 @@ bool llama_launcher_wait_ready(int timeout_sec) {
             TraceLog(LOG_INFO, "LLAMA: port :%d listening after ~%d ms, "
                                "waiting for model to finish loading...",
                      g_port, i * 250);
+            /* #region agent log (session a21715) */
+            {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "{\"port\":%d,\"elapsed_ms\":%d}", g_port, i * 250);
+                dbg_log("H2", "llama_launcher.c:wait_ready",
+                        "port_open", buf);
+            }
+            /* #endregion */
             port_seen = true;
         }
         if (port_seen && llama_health_ok(300)) {
             TraceLog(LOG_INFO, "LLAMA: /health OK after ~%d ms total",
                      i * 250);
+            /* #region agent log (session a21715) */
+            {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "{\"port\":%d,\"elapsed_ms\":%d}", g_port, i * 250);
+                dbg_log("H2", "llama_launcher.c:wait_ready",
+                        "health_ok", buf);
+            }
+            /* #endregion */
             return true;
         }
         /* If the child died while we were waiting, bail early. */
@@ -291,5 +382,14 @@ bool llama_launcher_wait_ready(int timeout_sec) {
              "LLAMA: /health not 200 after %d s "
              "(port %s); continuing anyway",
              timeout_sec, port_seen ? "open" : "closed");
+    /* #region agent log (session a21715) */
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "{\"timeout_sec\":%d,\"port_seen\":%s}",
+                 timeout_sec, port_seen ? "true" : "false");
+        dbg_log("H2", "llama_launcher.c:wait_ready", "timeout", buf);
+    }
+    /* #endregion */
     return false;
 }

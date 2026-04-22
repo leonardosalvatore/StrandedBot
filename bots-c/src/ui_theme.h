@@ -17,6 +17,12 @@ void ui_theme_draw_scanlines(Rectangle r);
  * with corner brackets, and a title label in the top-left. */
 void ui_theme_draw_frame(Rectangle r, const char *title);
 
+/* Same as ui_theme_draw_frame but with a caller-supplied fill color. Use
+ * this for panels that need a different transparency than the shared UI_BG
+ * (e.g. the SYSLOG panel, which sits over the map and wants to show more
+ * of it through the background). */
+void ui_theme_draw_frame_ex(Rectangle r, const char *title, Color bg);
+
 /* The monospace font loaded by ui_theme_apply(). Falls back to
  * GetFontDefault() if no system TTF could be loaded. */
 Font ui_theme_font(void);

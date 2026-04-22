@@ -15,6 +15,33 @@
 #include "cJSON.h"
 #include "config.h"
 
+/* #region agent log (session a21715) */
+static void dbg_log(const char *hyp, const char *loc, const char *msg,
+                    const char *data_json) {
+    FILE *f = fopen("/mnt/Data/Dev/robots/bots/.cursor/debug-a21715.log", "a");
+    if (!f) return;
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    long long tms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    fprintf(f,
+        "{\"sessionId\":\"a21715\",\"runId\":\"broadwatch\","
+        "\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\","
+        "\"data\":%s,\"timestamp\":%lld}\n",
+        hyp, loc, msg, data_json ? data_json : "{}", tms);
+    fclose(f);
+}
+static void dbg_json_escape(const char *in, char *out, size_t out_cap) {
+    size_t j = 0;
+    for (size_t i = 0; in && in[i] && j + 2 < out_cap; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '\\' || c == '"') { out[j++] = '\\'; out[j++] = (char)c; }
+        else if (c == '\n')         { out[j++] = '\\'; out[j++] = 'n'; }
+        else if (c < 0x20)          { /* skip control chars */ }
+        else                        { out[j++] = (char)c; }
+    }
+    out[j] = '\0';
+}
+/* #endregion */
+
 /* ── Configuration ───────────────────────────────────────────────────────── */
 #define MAX_MESSAGES     512
 #define MAX_MSG_CONTENT  8192
@@ -321,6 +348,22 @@ static char *llm_chat(cJSON *messages_json, cJSON *tools_json) {
             if (dbg_resp) { fputs(resp, dbg_resp); fclose(dbg_resp); }
         }
     }
+    /* #region agent log (session a21715) */
+    {
+        int ok = resp ? 1 : 0;
+        int has_err = (resp && strstr(resp, "\"error\"")) ? 1 : 0;
+        int has_loading = (resp && strstr(resp, "Loading model")) ? 1 : 0;
+        int has_503 = (resp && strstr(resp, "\"code\":503")) ? 1 : 0;
+        size_t rlen = resp ? strlen(resp) : 0;
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+                 "{\"hour\":%d,\"ok\":%d,\"has_error\":%d,"
+                 "\"has_loading_model\":%d,\"has_503\":%d,\"bytes\":%zu}",
+                 gl_bot_hour_count, ok, has_err,
+                 has_loading, has_503, rlen);
+        dbg_log("H2", "llm_agent.c:llm_chat", "chat_response", buf);
+    }
+    /* #endregion */
     return resp;
 }
 
@@ -493,6 +536,11 @@ static const char *SYSTEM_PROMPT_FALLBACK =
     "\n"
     "HARD RULES:\n"
     "- Trust the SYSTEM STATUS line; it is ground truth.\n"
+    "- Each turn you also get a VISIBLE 3x3 map centered on the bot ('@').\n"
+    "  Read it to pick an orthogonally-adjacent Create target or a 1-tile\n"
+    "  MoveTo step without burning a LookFar. For anything beyond the 8\n"
+    "  neighbours, use LookFar. Glyphs: .=gravel ,=sand ~=water #=rocks\n"
+    "  H=habitat B=battery S=solar_panel X=broken_habitat ?=off_map.\n"
     "- Never call MoveTo with target equal to your current (x,y). Read the\n"
     "  position from SYSTEM STATUS before picking a target.\n"
     "- LookFar has radius 40 and reveals the nearest feature of every type.\n"
@@ -589,6 +637,71 @@ static const char *wait_for_user_reply(void) {
 }
 
 /* Wrapper so agent thread can call consume_energy */
+/* ── Local surroundings view ─────────────────────────────────────────────
+ * Renders a (2*R+1) x (2*R+1) ASCII snapshot of the tiles around the bot
+ * so the LLM can plan spatially instead of having to infer the world from
+ * LookFar samples. One glyph per tile is enough for a small model to read
+ * and keeps the prompt tight. The grid is oriented the same way as the
+ * in-game map: x grows to the right, y grows downward. */
+#define BOT_VISION_RADIUS 1
+
+static char tile_glyph(TileType t) {
+    switch (t) {
+        case TILE_GRAVEL:         return '.';
+        case TILE_SAND:           return ',';
+        case TILE_WATER:          return '~';
+        case TILE_ROCKS:          return '#';
+        case TILE_HABITAT:        return 'H';
+        case TILE_BATTERY:        return 'B';
+        case TILE_SOLAR_PANEL:    return 'S';
+        case TILE_BROKEN_HABITAT: return 'X';
+        default:                  return '?';
+    }
+}
+
+/* Writes up to `cap` bytes (incl. NUL) into `out`. Tiles outside the map
+ * are rendered as '?'; the bot itself is rendered as '@'. The caller must
+ * NOT hold gl_tiles_lock — this function takes it. */
+static void build_surroundings(char *out, size_t cap, int cx, int cy) {
+    if (cap == 0) return;
+    const int R = BOT_VISION_RADIUS;
+    int n = snprintf(out, cap,
+        "VISIBLE %dx%d around bot (bot='@' at center; rows top=y-%d down "
+        "to y+%d; cols left=x-%d right=x+%d; legend: .=gravel ,=sand "
+        "~=water #=rocks H=habitat B=battery S=solar_panel "
+        "X=broken_habitat ?=off_map):\n",
+        2*R+1, 2*R+1, R, R, R, R);
+    if (n < 0 || (size_t)n >= cap) { out[cap-1] = '\0'; return; }
+    size_t w = (size_t)n;
+
+    pthread_mutex_lock(&gl_tiles_lock);
+    for (int dy = -R; dy <= R; dy++) {
+        for (int dx = -R; dx <= R; dx++) {
+            int x = cx + dx, y = cy + dy;
+            char g;
+            if (dx == 0 && dy == 0) {
+                g = '@';
+            } else if (x < 0 || x >= GRID_WIDTH ||
+                       y < 0 || y >= GRID_HEIGHT) {
+                g = '?';
+            } else {
+                g = tile_glyph(gl_tile_matrix[x][y].type);
+            }
+            if (w + 2 >= cap) { /* leave room for '\n' + NUL */
+                pthread_mutex_unlock(&gl_tiles_lock);
+                out[cap-1] = '\0';
+                return;
+            }
+            out[w++] = g;
+        }
+        if (w + 2 >= cap) break;
+        out[w++] = '\n';
+    }
+    pthread_mutex_unlock(&gl_tiles_lock);
+    if (w >= cap) w = cap - 1;
+    out[w] = '\0';
+}
+
 static void consume_energy_wrapper(void) {
     gl_bot_energy--;
     if (gl_bot_energy < 0) gl_bot_energy = 0;
@@ -676,11 +789,39 @@ static void *agent_loop(void *arg) {
                 "habitat cluster is missing a solar_panel orthogonally "
                 "connected; |dx|+|dy|=1 required)");
         }
-        char status[1280];
+        /* Local vision window (3x3 by default). Prepended to the status
+         * message so the model sees the spatial context before the
+         * scalar fields. */
+        char surround[1024];
+        build_surroundings(surround, sizeof(surround), gx, gy);
+
+        /* Echo the exact surroundings string to stdout + SYSLOG, one
+         * msg_log line per '\n'-delimited row, so operators see the same
+         * grid the LLM sees. msg_log adds its own terminating newline. */
+        {
+            const char *s = surround;
+            while (*s) {
+                const char *nl = strchr(s, '\n');
+                size_t len = nl ? (size_t)(nl - s) : strlen(s);
+                if (len > 0) {
+                    char line[512];
+                    if (len >= sizeof(line)) len = sizeof(line) - 1;
+                    memcpy(line, s, len);
+                    line[len] = '\0';
+                    msg_log("  %s", line);
+                }
+                if (!nl) break;
+                s = nl + 1;
+            }
+        }
+
+        char status[2560];
         snprintf(status, sizeof(status),
+            "%s"
             "SYSTEM STATUS (truth source): hour=%d, energy=%d, position=(%d,%d), "
             "tile=%s, current_tile_buildable=%s, inventory_rocks=%d, "
             "hours_to_solar_flare=%d, %s",
+            surround,
             gl_bot_hour_count, gl_bot_energy, gx, gy,
             cur_tile,
             cur_buildable ? "true" : "false",
@@ -813,8 +954,49 @@ static void *agent_loop(void *arg) {
 
             char *args_pretty = cJSON_PrintUnformatted(args);
             msg_log("  [Tool Call] %s(%s)", fn_name, args_pretty ? args_pretty : "{}");
+            /* #region agent log (session a21715) */
+            {
+                char args_esc[256];
+                dbg_json_escape(args_pretty ? args_pretty : "{}",
+                                args_esc, sizeof(args_esc));
+                char name_esc[64];
+                dbg_json_escape(fn_name, name_esc, sizeof(name_esc));
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                         "{\"hour\":%d,\"tool\":\"%s\",\"args\":\"%s\"}",
+                         hour, name_esc, args_esc);
+                dbg_log("H3", "llm_agent.c:tool_call",
+                        "tool_invoked", buf);
+            }
+            /* #endregion */
             if (args_pretty) free(args_pretty);
             ToolResult tr = dispatch_tool(fn_name, args);
+            /* #region agent log (session a21715) */
+            {
+                char res_esc[256];
+                /* Truncate tr.json to 220 chars so the log line stays short
+                 * even for ListBuiltTiles / LookFar payloads. */
+                char trunc[240];
+                snprintf(trunc, sizeof(trunc), "%.220s", tr.json);
+                dbg_json_escape(trunc, res_esc, sizeof(res_esc));
+                char name_esc[64];
+                dbg_json_escape(fn_name, name_esc, sizeof(name_esc));
+                int gx, gy;
+                gl_bot_grid_pos(&gx, &gy);
+                char buf[600];
+                snprintf(buf, sizeof(buf),
+                         "{\"hour\":%d,\"tool\":\"%s\",\"result\":\"%s\","
+                         "\"pos_x\":%d,\"pos_y\":%d,\"energy\":%d,"
+                         "\"rocks\":%d}",
+                         hour, name_esc, res_esc, gx, gy,
+                         gl_bot_energy, gl_bot_inventory_rocks);
+                /* H3 for all tools; H4 specifically for Create since that
+                 * is the build outcome we want to audit. */
+                dbg_log(strcmp(fn_name, "Create") == 0 ? "H4" : "H3",
+                        "llm_agent.c:tool_call",
+                        "tool_result", buf);
+            }
+            /* #endregion */
             cJSON_Delete(args);
 
             ChatMsg *tool_entry = append_msg("tool", tr.json, hour);

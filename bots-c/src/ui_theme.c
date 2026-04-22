@@ -134,8 +134,12 @@ void ui_theme_draw_scanlines(Rectangle r) {
 
 /* ── Custom hacker frame ──────────────────────────────────────────────────── */
 void ui_theme_draw_frame(Rectangle r, const char *title) {
+    ui_theme_draw_frame_ex(r, title, UI_BG);
+}
+
+void ui_theme_draw_frame_ex(Rectangle r, const char *title, Color bg) {
     /* Translucent fill. */
-    DrawRectangleRec(r, UI_BG);
+    DrawRectangleRec(r, bg);
 
     /* Double border (bright outer + dim inner offset). */
     DrawRectangleLinesEx(r, 2.0f, UI_FG);

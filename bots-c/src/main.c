@@ -32,11 +32,11 @@ static const char *bot_state_name(BotState s) {
 }
 
 /* ── HUD helper: framed panel with scissor-clipped body text ─────────────── */
-static void draw_hud_text_panel(int x, int y, int w, int h,
-                                const char *title, const char *body,
-                                bool word_wrap) {
+static void draw_hud_text_panel_ex(int x, int y, int w, int h,
+                                   const char *title, const char *body,
+                                   bool word_wrap, Color bg) {
     Rectangle frame = {(float)x, (float)y, (float)w, (float)h};
-    ui_theme_draw_frame(frame, title);
+    ui_theme_draw_frame_ex(frame, title, bg);
 
     /* Content rect: inset inside the double border and below the title plate. */
     Rectangle content = { (float)(x + 10), (float)(y + 22),
@@ -59,6 +59,12 @@ static void draw_hud_text_panel(int x, int y, int w, int h,
     GuiSetStyle(DEFAULT, TEXT_ALIGNMENT_VERTICAL, prev_valign);
 
     EndScissorMode();
+}
+
+static void draw_hud_text_panel(int x, int y, int w, int h,
+                                const char *title, const char *body,
+                                bool word_wrap) {
+    draw_hud_text_panel_ex(x, y, w, h, title, body, word_wrap, UI_BG);
 }
 
 /* ── UI panels (drawn with raygui after game starts) ─────────────────────── */
@@ -95,7 +101,11 @@ static void draw_log_panel(int x, int y, int w, int h) {
         off += snprintf(buf + off, sizeof(buf) - off, "> %s\n", lines[i]);
         if (off >= (int)sizeof(buf) - 2) break;
     }
-    draw_hud_text_panel(x, y, w, h, "SYSLOG", buf, /*wrap=*/false);
+    /* SYSLOG sits over the map, so use a noticeably more transparent fill
+     * than UI_BG (alpha 230 → ~110) to reveal the terrain underneath. */
+    Color syslog_bg = (Color){ UI_BG.r, UI_BG.g, UI_BG.b, 110 };
+    draw_hud_text_panel_ex(x, y, w, h, "SYSLOG", buf, /*wrap=*/false,
+                           syslog_bg);
 }
 
 /* ── Reply dialog ────────────────────────────────────────────────────────── */
@@ -283,10 +293,12 @@ int main(int argc, char **argv) {
             int sw = GetScreenWidth(), sh = GetScreenHeight();
             int pad = 8;
             int top_h = 160;
-            int bot_h = 180;
+            int bot_h = 360;                        /* 2x the previous 180 */
+            int full_w = sw - 2 * pad;
+            int log_w = (int)(full_w * 0.70f);      /* 30% narrower */
             int side_w = 310;
             draw_stats_panel(pad, pad, side_w, top_h);
-            draw_log_panel(pad, sh - bot_h - pad, sw - 2 * pad, bot_h);
+            draw_log_panel(pad, sh - bot_h - pad, log_w, bot_h);
 
             /* Interactive reply dialog */
             if (llm_agent_waiting_for_reply()) {
