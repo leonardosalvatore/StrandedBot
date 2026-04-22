@@ -5,6 +5,8 @@
 #include "ui_theme.h"
 #include "start_menu.h"
 #include "llm_agent.h"
+#include "llama_launcher.h"
+#include "config.h"
 #include "message_log.h"
 
 #include <stdio.h>
@@ -127,10 +129,62 @@ static void draw_reply_dialog(void) {
     }
 }
 
+/* ── CLI autostart helpers ───────────────────────────────────────────────── */
+typedef enum {
+    AUTOSTART_NONE = 0,
+    AUTOSTART_DEFAULT,
+    AUTOSTART_CUSTOM,
+} AutostartMode;
+
+static void synthesise_result_from_cfg(const BotsConfig *cfg,
+                                       StartMenuResult *out) {
+    const ScenarioConfig *s = cfg->default_scenario == 1 ? &cfg->builder
+                                                         : &cfg->explorer;
+    memset(out, 0, sizeof(*out));
+    out->started  = true;
+    out->scenario = cfg->default_scenario == 1 ? SCENARIO_BUILDER
+                                               : SCENARIO_EXPLORER;
+    out->rocks_amount            = s->rocks_amount > 0 ? s->rocks_amount : 1;
+    out->initial_town_size       = s->initial_town_size;
+    out->energy                  = s->energy > 0 ? s->energy : 1;
+    out->inventory_rocks         = s->inventory_rocks;
+    out->hours_solar_flare_every = s->hours_solar_flare_every > 0
+                                       ? s->hours_solar_flare_every : 1;
+    out->interactive_mode        = cfg->interactive_mode;
+
+    strncpy(out->llama_start_script, cfg->llama.start_script,
+            sizeof(out->llama_start_script) - 1);
+    out->llama_auto_start = cfg->llama.auto_start;
+}
+
 /* ── Main ────────────────────────────────────────────────────────────────── */
-int main(void) {
+int main(int argc, char **argv) {
+    AutostartMode autostart = AUTOSTART_NONE;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--autostart-default") == 0) {
+            autostart = AUTOSTART_DEFAULT;
+        } else if (strcmp(argv[i], "--autostart-custom") == 0) {
+            autostart = AUTOSTART_CUSTOM;
+        } else if (strcmp(argv[i], "--help") == 0 ||
+                   strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s [--autostart-default|--autostart-custom]\n"
+                   "  --autostart-default  skip the start menu using "
+                   "bots-defaults.json\n"
+                   "  --autostart-custom   skip the start menu using "
+                   "bots-custom.json (falls back to defaults)\n",
+                   argv[0]);
+            return 0;
+        }
+    }
+
     srand((unsigned)time(NULL));
     msg_log_init();
+
+    /* Config is loaded up front so the start menu, the agent, and the
+     * launcher share one in-memory snapshot. */
+    static BotsConfig g_cfg;
+    config_load_custom(&g_cfg);
+    config_set_active(&g_cfg);
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(WIN_WIDTH, WIN_HEIGHT, "Bots");
@@ -142,7 +196,22 @@ int main(void) {
     start_menu_init();
 
     bool game_started = false;
-    bool llm_enabled = true;
+    bool llm_enabled  = true;
+
+    /* Resolve the autostart path (if any) now that the window/theme are up.
+     * Menu stays skipped by flipping game_started ourselves. */
+    StartMenuResult autostart_result = {0};
+    if (autostart != AUTOSTART_NONE) {
+        BotsConfig cfg_auto;
+        if (autostart == AUTOSTART_DEFAULT) config_load_defaults(&cfg_auto);
+        else                                 config_load_custom(&cfg_auto);
+        /* Keep the active config pointing at the autostart snapshot so
+         * prompt lookups match the flag the user asked for. */
+        g_cfg = cfg_auto;
+        synthesise_result_from_cfg(&g_cfg, &autostart_result);
+        msg_log("Autostart: %s",
+                autostart == AUTOSTART_DEFAULT ? "defaults" : "custom");
+    }
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
@@ -154,60 +223,55 @@ int main(void) {
 
         if (!game_started) {
             ClearBackground(DARKGRAY);
-            /* Draw the start menu */
-            if (!start_menu_update()) {
-                StartMenuResult r = start_menu_result();
-                if (r.started) {
-                    gl_bot_energy = r.energy;
-                    gl_bot_inventory_rocks = r.inventory_rocks;
-                    gl_apply_solar_flare_interval(r.hours_solar_flare_every);
-                    gl_apply_initial_town_size(r.initial_town_size);
 
-                    gl_initialize_world(llm_enabled, r.rocks_amount);
-                    game_started = true;
+            StartMenuResult r = {0};
+            bool ready = false;
+            if (autostart != AUTOSTART_NONE) {
+                r = autostart_result;
+                ready = true;
+            } else if (!start_menu_update()) {
+                r = start_menu_result();
+                ready = true;
+            }
 
-                    if (llm_enabled) {
-                        char prompt[4096];
-                        if (r.use_custom_prompt && r.custom_prompt[0]) {
-                            strncpy(prompt, r.custom_prompt, sizeof(prompt) - 1);
-                        } else if (r.scenario == SCENARIO_BUILDER) {
-                            snprintf(prompt, sizeof(prompt),
-                                "MISSION: expand habitats to build a big town. "
-                                "Your unit of progress is the number of "
-                                "habitat tiles placed. Each turn do ONE of: "
-                                "(a) Create a habitat/battery/solar_panel if "
-                                "SYSTEM STATUS shows current_tile_buildable=true "
-                                "and you have the rocks, (b) MoveTo an adjacent "
-                                "buildable tile to extend the cluster, or "
-                                "(c) Dig rocks when inventory is too low to "
-                                "build your next piece. Place structures in "
-                                "orthogonally-connected clusters (habitat next "
-                                "to battery next to solar_panel) so the network "
-                                "charges. Any gravel, sand, or rocks tile is a "
-                                "valid build spot; don't hunt for a special "
-                                "one. Keep pushing into fresh tiles; do not "
-                                "revisit tiles you already built on.");
-                        } else {
-                            snprintf(prompt, sizeof(prompt),
-                                "MISSION: explore the map. Your unit of "
-                                "progress is distance covered from your "
-                                "starting position. Each turn either MoveTo a "
-                                "far target (use the full MoveTo range when "
-                                "possible, not 1-tile steps), or LookFar when "
-                                "you have no target left from the previous "
-                                "scan. Only build a small recharge base "
-                                "(habitat + solar + battery, orthogonally "
-                                "adjacent) when energy drops below 400. When "
-                                "you do build, any tile where SYSTEM STATUS "
-                                "shows current_tile_buildable=true works — "
-                                "gravel, sand, and rocks all count. Do not "
-                                "waste hours hunting for a 'better' tile.");
-                        }
-                        llm_agent_start(prompt, r.interactive_mode);
+            if (ready && r.started) {
+                gl_bot_energy          = r.energy;
+                gl_bot_inventory_rocks = r.inventory_rocks;
+                gl_apply_solar_flare_interval(r.hours_solar_flare_every);
+                gl_apply_initial_town_size(r.initial_town_size);
+
+                gl_initialize_world(llm_enabled, r.rocks_amount);
+                game_started = true;
+
+                /* Spawn llama-server in the background if requested AND the
+                 * port is not already open. Inherits our stdout/stderr. */
+                if (llm_enabled && r.llama_auto_start) {
+                    llama_launcher_set_port(g_cfg.llama.port);
+                    if (llama_launcher_start(r.llama_start_script)) {
+                        /* 120 s covers port-bind (~5-10 s) + model load
+                         * (~20-60 s on ROCm, more on cold cache). The
+                         * launcher returns as soon as /health is 200. */
+                        llama_launcher_wait_ready(120);
                     }
-
-                    msg_log("Game started.");
                 }
+
+                if (llm_enabled) {
+                    char prompt[4096];
+                    if (r.use_custom_prompt && r.custom_prompt[0]) {
+                        strncpy(prompt, r.custom_prompt, sizeof(prompt) - 1);
+                        prompt[sizeof(prompt) - 1] = '\0';
+                    } else {
+                        const ScenarioConfig *sc =
+                            r.scenario == SCENARIO_BUILDER ? &g_cfg.builder
+                                                           : &g_cfg.explorer;
+                        strncpy(prompt, sc->mission_prompt,
+                                sizeof(prompt) - 1);
+                        prompt[sizeof(prompt) - 1] = '\0';
+                    }
+                    llm_agent_start(prompt, r.interactive_mode);
+                }
+
+                msg_log("Game started.");
             }
         } else {
             /* Game running */
@@ -239,6 +303,7 @@ int main(void) {
     }
 
     llm_agent_stop();
+    llama_launcher_stop();
     rendering_unload();
     ui_theme_unload();
     CloseWindow();

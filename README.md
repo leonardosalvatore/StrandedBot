@@ -39,13 +39,30 @@ The resulting executable is `bots-c/build/bots`.
 
 ## Run
 
-**1. Start the LLM server** (in another terminal):
+The game can spawn `llama-server` itself — by default the start menu has
+**AUTO-START LLAMA SERVER** checked, so launching `bots` is usually all
+you need:
+
+```bash
+./bots-c/build/bots
+```
+
+On first start, the game reads `bots-defaults.json` (and `bots-custom.json`
+if it exists), forks the script pointed at by `llama.start_script`
+(defaults to `./start-llama-server.sh`) if the port isn't already open,
+inherits its stdout/stderr, and sends it SIGTERM on exit. Hitting Ctrl-C
+in the terminal also tears down the child.
+
+If you'd rather run the server yourself (for example, under a debugger or
+on a different host), uncheck **AUTO-START LLAMA SERVER** in the menu and
+run it in another terminal:
 
 ```bash
 ./start-llama-server.sh [/path/to/model.gguf]
 ```
 
-The script starts `llama-server` on `127.0.0.1:8080` with:
+The script starts `llama-server` on `127.0.0.1:<PORT>` (default `53425`;
+pass `-p <PORT>` or set `LLAMA_PORT=<PORT>` to override) with:
 
 - `-c 16384` — 16k context (reasoning models burn through 8k quickly)
 - `--jinja` — use the GGUF's embedded chat template (required for
@@ -57,13 +74,7 @@ The bundled script also sets up ROCm library paths for AMD GPUs. Edit it
 (`LLAMA_DIR`, `DEFAULT_MODEL`, the `HIP_*` env vars) to point at your own
 binaries, or just run `llama-server` yourself with the same flags — the
 client only cares that there's an OpenAI-compatible endpoint at
-`http://127.0.0.1:8080/v1/chat/completions`.
-
-**2. Start the game:**
-
-```bash
-./bots-c/build/bots
-```
+`http://127.0.0.1:<llama.port>/v1/chat/completions` (default `53425`).
 
 The start menu lets you pick:
 
@@ -73,12 +84,58 @@ The start menu lets you pick:
 - **Initial town size** — pre-placed habitat cluster (0 to disable)
 - **Starting energy** and **starting inventory rocks**
 - **Hours between solar flares**
+- **llama start script** — path to the launcher script the game execs
+- **Auto-start llama server** — fork the script above if nothing is
+  already listening on `:<llama.port>`
 - **Interactive mode** — pause when the bot asks a `?` question and let
   you type a reply before the turn continues
 - **Custom prompt** — override the built-in mission prompt
+- **Revert to defaults** — overwrite `bots-custom.json` with
+  `bots-defaults.json` and reload the menu
+
+Every widget state is written to `bots-custom.json` the instant you hit
+RUN, so the next launch (or `--autostart-custom`) replays it.
 
 `F11` toggles fullscreen. Pan with right-mouse drag, zoom with the
 scroll wheel.
+
+### CLI flags
+
+| Flag                   | Effect                                                   |
+|------------------------|----------------------------------------------------------|
+| `--autostart-default`  | Skip the start menu; use values from `bots-defaults.json`|
+| `--autostart-custom`   | Skip the start menu; use values from `bots-custom.json`  |
+| `-h`, `--help`         | Print usage                                              |
+
+Handy for rebuild-run-repeat loops while debugging.
+
+## Configuration
+
+Two JSON files (searched in the current working directory, then next to
+the `bots` executable) hold every tunable knob, including the full LLM
+prompt set:
+
+- **`bots-defaults.json`** — shipped with the repo, read-only baseline.
+  Includes the Explorer and Builder mission prompts, the agent
+  `SYSTEM_PROMPT`, every per-tool description (`MoveTo`, `LookFar`, `Dig`,
+  `Create`, `ListBuiltTiles`), the llama launcher script path, and per-
+  scenario presets (rocks, energy, inventory, flare interval, …).
+- **`bots-custom.json`** — user-writable overrides. Created the first
+  time you hit RUN in the start menu; rewritten on every subsequent run.
+  You can also hand-edit it.
+
+Overlay rules: `bots-custom.json` wins over `bots-defaults.json` for any
+field it defines; missing fields fall back to the defaults. If neither
+file is present, a hardcoded fallback matching the shipped defaults is
+used so the binary runs even when invoked outside the repo.
+
+Tool description strings may contain `%d` placeholders (filled at runtime
+with grid size, move range, rock costs). Preserve their order when
+editing.
+
+The **REVERT TO DEFAULTS** button in the start menu rewrites
+`bots-custom.json` with the contents of `bots-defaults.json` and reloads
+all widgets.
 
 ## How LLM ↔ tools ↔ world fit
 
@@ -99,7 +156,7 @@ or a `note` when relevant).
    and a diagnosed `habitat_hourly_charge_active` reason. That way the
    model doesn't have to remember prior state.
 3. Calls `http_post` → `POST /v1/chat/completions` on
-   `127.0.0.1:8080`, parses `tool_calls` from the assistant message,
+   `127.0.0.1:<llama.port>`, parses `tool_calls` from the assistant message,
    dispatches them via `gl_dispatch_tool_call`, and appends the JSON
    result as a `tool` message for the next turn.
 4. `--reasoning-format deepseek` means the server strips the
@@ -138,6 +195,8 @@ cluster.
 | `bots-c/src/start_menu.c`| Start screen (raygui), scenario + custom prompt      |
 | `bots-c/src/ui_theme.c`  | Hacker-terminal raygui theme + TTF font loader       |
 | `bots-c/src/llm_agent.c` | OpenAI-compatible chat + tool-call loop              |
+| `bots-c/src/llama_launcher.c` | fork/exec + lifecycle for `llama-server`        |
+| `bots-c/src/config.c`    | JSON-backed settings and prompts (defaults + custom) |
 | `bots-c/src/http_post.c` | Minimal sockets-based HTTP POST                      |
 | `bots-c/src/cJSON.c`     | Vendored cJSON parser                                |
 | `bots-c/src/message_log.c`| Ring buffer that feeds the SYSLOG panel             |

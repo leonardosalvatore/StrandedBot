@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-#define LLM_DEFAULT_URL "http://localhost:8080/v1/chat/completions"
+#define LLM_DEFAULT_URL "http://localhost:53425/v1/chat/completions"
 
 void llm_agent_start(const char *initial_prompt, bool interactive_mode);
 void llm_agent_stop(void);

@@ -20,6 +20,10 @@ typedef struct {
     bool interactive_mode;
     bool use_custom_prompt;
     char custom_prompt[4096];
+
+    /* llama.cpp launcher fields */
+    char llama_start_script[512];
+    bool llama_auto_start;
 } StartMenuResult;
 
 void             start_menu_init(void);

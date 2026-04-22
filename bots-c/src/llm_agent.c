@@ -13,6 +13,7 @@
 
 #include "http_post.h"
 #include "cJSON.h"
+#include "config.h"
 
 /* ── Configuration ───────────────────────────────────────────────────────── */
 #define MAX_MESSAGES     512
@@ -202,12 +203,43 @@ static cJSON *build_tools_json(void) {
         cJSON_AddItemToArray(tools, t); \
     } while(0)
 
-    char move_desc[512];
-    snprintf(move_desc, sizeof(move_desc),
-        "Move the bot toward a target tile (x,y) on the %dx%d grid. "
-        "Up to %d tiles per call. Costs 1 energy per tile.",
-        GRID_WIDTH, GRID_HEIGHT, MOVE_MAX_TILES);
+    /* Pull tool-description templates from the active config (if any);
+     * fallbacks match the previously hardcoded strings so the agent still
+     * works before main() sets the active config. */
+    const BotsConfig *cfg = config_active();
+    const char *t_move =
+        (cfg && cfg->prompts.tool_move_to[0])
+            ? cfg->prompts.tool_move_to
+            : "Move the bot toward a target tile (x,y) on the %dx%d grid. "
+              "Up to %d tiles per call. Costs 1 energy per tile.";
+    const char *t_look_far =
+        (cfg && cfg->prompts.tool_look_far[0])
+            ? cfg->prompts.tool_look_far
+            : "Wide scan radius %d tiles. Returns notable features with coords "
+              "and distance. Rock fields block line-of-sight. Costs 1 energy.";
+    const char *t_dig =
+        (cfg && cfg->prompts.tool_dig[0])
+            ? cfg->prompts.tool_dig
+            : "Dig a rock from current 'rocks' tile. Adds 1 rock to inventory. "
+              "Tile becomes gravel. Costs 1 energy.";
+    const char *t_create =
+        (cfg && cfg->prompts.tool_create[0])
+            ? cfg->prompts.tool_create
+            : "Create a structure on your CURRENT tile. Valid ground: gravel, "
+              "sand, or rocks. Invalid ground: water, broken_habitat, or any "
+              "tile that already has a structure. Rock cost: habitat=%d, "
+              "battery=%d, solar_panel=%d. Also costs 1 energy.";
+    const char *t_list =
+        (cfg && cfg->prompts.tool_list_built_tiles[0])
+            ? cfg->prompts.tool_list_built_tiles
+            : "Returns every structure the bot placed via Create. Costs 1 energy.";
 
+    /* Format %d slots from the templates. Strings without placeholders are
+     * unaffected; extra printf args are ignored, so user edits that drop
+     * placeholders remain safe. */
+    char move_desc[768];
+    snprintf(move_desc, sizeof(move_desc), t_move,
+             GRID_WIDTH, GRID_HEIGHT, MOVE_MAX_TILES);
     ADD_TOOL("MoveTo", move_desc, {
         cJSON *px = cJSON_CreateObject();
         cJSON_AddStringToObject(px, "type", "integer");
@@ -221,25 +253,16 @@ static cJSON *build_tools_json(void) {
         cJSON_AddItemToArray(req, cJSON_CreateString("target_y"));
     });
 
-    char lf_desc[256];
-    snprintf(lf_desc, sizeof(lf_desc),
-        "Wide scan radius %d tiles. Returns notable features with coords and distance. "
-        "Rock fields block line-of-sight. Costs 1 energy.", gl_bot_lookfar_distance);
+    char lf_desc[384];
+    snprintf(lf_desc, sizeof(lf_desc), t_look_far, gl_bot_lookfar_distance);
     ADD_TOOL("LookFar", lf_desc, { /* no params */ });
 
-    ADD_TOOL("Dig",
-        "Dig a rock from current 'rocks' tile. Adds 1 rock to inventory. "
-        "Tile becomes gravel. Costs 1 energy.",
-        { /* no params */ });
+    ADD_TOOL("Dig", t_dig, { /* no params */ });
 
-    char cr_desc[384];
-    snprintf(cr_desc, sizeof(cr_desc),
-        "Create a structure on your CURRENT tile. "
-        "Valid ground: gravel, sand, or rocks. "
-        "Invalid ground: water, broken_habitat, or any tile that already has "
-        "a structure. "
-        "Rock cost: habitat=%d, battery=%d, solar_panel=%d. Also costs 1 energy.",
-        ROCKS_REQUIRED_FOR_HABITAT, ROCKS_REQUIRED_FOR_BATTERY, ROCKS_REQUIRED_FOR_SOLAR_PANEL);
+    char cr_desc[1280];
+    snprintf(cr_desc, sizeof(cr_desc), t_create,
+             ROCKS_REQUIRED_FOR_HABITAT, ROCKS_REQUIRED_FOR_BATTERY,
+             ROCKS_REQUIRED_FOR_SOLAR_PANEL);
     ADD_TOOL("Create", cr_desc, {
         cJSON *tt = cJSON_CreateObject();
         cJSON_AddStringToObject(tt, "type", "string");
@@ -248,9 +271,7 @@ static cJSON *build_tools_json(void) {
         cJSON_AddItemToArray(req, cJSON_CreateString("tile_type"));
     });
 
-    ADD_TOOL("ListBuiltTiles",
-        "Returns every structure the bot placed via Create. Costs 1 energy.",
-        { /* no params */ });
+    ADD_TOOL("ListBuiltTiles", t_list, { /* no params */ });
 
     #undef ADD_TOOL
     return tools;
@@ -278,13 +299,17 @@ static char *llm_chat(cJSON *messages_json, cJSON *tools_json) {
     FILE *dbg = fopen("/tmp/bots_last_request.json", "w");
     if (dbg) { fputs(json_str, dbg); fclose(dbg); }
 
-    char *resp = http_post("127.0.0.1", 8080,
+    const BotsConfig *cfg_port = config_active();
+    int llm_port = (cfg_port && cfg_port->llama.port > 0)
+                       ? cfg_port->llama.port : 53425;
+    char *resp = http_post("127.0.0.1", llm_port,
                            "/v1/chat/completions",
                            "application/json",
                            json_str, 120);
     free(json_str);
     if (!resp) {
-        msg_log("  [LLM] HTTP POST failed (is llama-server running on :8080?)");
+        msg_log("  [LLM] HTTP POST failed (is llama-server running on :%d?)",
+                llm_port);
     } else {
         /* Log a short excerpt if the server returned an error envelope. */
         const char *err = strstr(resp, "\"error\"");
@@ -453,7 +478,10 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
  *   - chasing tiles (sand/gravel/water) that have no mechanical use
  *   - verbose multi-paragraph replies that overflow max_tokens and clip
  *     the trailing tool-call arguments. */
-static const char *SYSTEM_PROMPT =
+/* Fallback text used if no config was loaded (e.g. early startup, unit
+ * tests). The runtime SYSTEM prompt comes from config_active() via
+ * active_system_prompt() below. */
+static const char *SYSTEM_PROMPT_FALLBACK =
     "You are the operator of a single autonomous robot on a tile grid. "
     "You act by calling ONE tool per turn via native tool_calls.\n"
     "\n"
@@ -498,6 +526,12 @@ static const char *SYSTEM_PROMPT =
     "  not old LookFar memory.\n"
     "- If energy drops below 200, get onto a habitat tile and stay there\n"
     "  until recharged.";
+
+static const char *active_system_prompt(void) {
+    const BotsConfig *cfg = config_active();
+    if (cfg && cfg->prompts.system[0]) return cfg->prompts.system;
+    return SYSTEM_PROMPT_FALLBACK;
+}
 
 static const char *POWER_GRID_RULES =
     "Power works only through orthogonal adjacency of habitat, battery, and "
@@ -571,7 +605,7 @@ static void *agent_loop(void *arg) {
     /* Messages were already seeded by llm_agent_start (system + user prompt).
      * If somehow empty, add a fallback. */
     if (msg_count < 2) {
-        append_msg("system", SYSTEM_PROMPT, 0);
+        append_msg("system", active_system_prompt(), 0);
         char fallback[4096];
         build_base_prompt(fallback, sizeof(fallback), 0);
         append_msg("user", fallback, 0);
@@ -831,7 +865,7 @@ void llm_agent_start(const char *initial_prompt, bool interactive_mode) {
     /* Reset messages and add initial prompt */
     msg_count = 0;
     if (initial_prompt && initial_prompt[0]) {
-        append_msg("system", SYSTEM_PROMPT, 0);
+        append_msg("system", active_system_prompt(), 0);
         append_msg("user", initial_prompt, 0);
     }
 

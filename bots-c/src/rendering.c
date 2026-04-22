@@ -2,7 +2,10 @@
 #include "message_log.h"
 #include "particles.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>   /* readlink */
+#include <limits.h>   /* PATH_MAX */
 
 /* ── Bot sprite sheet (bots.png) ─────────────────────────────────────────── */
 static Texture2D bot_sprite = {0};
@@ -50,35 +53,49 @@ static Vector2 cam_pan_anchor = {0};
 #define CAM_ZOOM_STEP 1.2f
 
 /* ── Texture loading helpers ─────────────────────────────────────────────── */
-static Texture2D try_load(const char *const *candidates, const char *label) {
-    Texture2D tex = {0};
-    for (const char *const *p = candidates; *p; p++) {
-        if (FileExists(*p)) {
-            tex = LoadTexture(*p);
-            if (tex.id != 0) {
-                msg_log("  [%s] Loaded spritesheet from %s", label, *p);
-                return tex;
-            }
-        }
+/* Assets live next to the binary — CMake copies bots-c/resources/*.png into
+ * $<TARGET_FILE_DIR:bots>/ at build time. Resolving relative to the exe (not
+ * CWD) makes the binary work no matter where it's launched from. */
+static Texture2D load_exe_relative(const char *filename, const char *label) {
+    /* Hold the exe path in a buffer smaller than `full` so the concatenation
+     * below can't exceed PATH_MAX and gcc's -Wformat-truncation stays quiet. */
+    char exe_dir[PATH_MAX / 2];
+    ssize_t n = readlink("/proc/self/exe", exe_dir, sizeof(exe_dir) - 1);
+    if (n <= 0) {
+        msg_log("  [%s] readlink(/proc/self/exe) failed; cannot locate %s",
+                label, filename);
+        return (Texture2D){0};
     }
-    msg_log("  [%s] spritesheet not found; using fallback", label);
+    exe_dir[n] = '\0';
+
+    char *slash = strrchr(exe_dir, '/');
+    if (slash) *slash = '\0';
+    else       exe_dir[0] = '\0';
+
+    char full[PATH_MAX];
+    snprintf(full, sizeof(full), "%s/%s",
+             exe_dir[0] ? exe_dir : ".", filename);
+
+    if (!FileExists(full)) {
+        msg_log("  [%s] spritesheet not found next to binary: %s",
+                label, full);
+        return (Texture2D){0};
+    }
+    Texture2D tex = LoadTexture(full);
+    if (tex.id == 0) {
+        msg_log("  [%s] LoadTexture failed for %s", label, full);
+    } else {
+        msg_log("  [%s] Loaded spritesheet from %s", label, full);
+    }
     return tex;
 }
 
 void rendering_init(void) {
-    static const char *bot_paths[] = {
-        "bots.png", "../resources/bots.png", "resources/bots.png",
-        "../bots.png", "../../resources/bots.png", NULL,
-    };
-    bot_sprite = try_load(bot_paths, "Bots");
+    bot_sprite = load_exe_relative("bots.png", "Bots");
     bot_sprite_loaded = bot_sprite.id != 0;
     if (bot_sprite_loaded) SetTextureFilter(bot_sprite, TEXTURE_FILTER_BILINEAR);
 
-    static const char *tile_paths[] = {
-        "tiles.png", "../resources/tiles.png", "resources/tiles.png",
-        "../tiles.png", "../../resources/tiles.png", NULL,
-    };
-    tiles_atlas = try_load(tile_paths, "Tiles");
+    tiles_atlas = load_exe_relative("tiles.png", "Tiles");
     tiles_atlas_loaded = tiles_atlas.id != 0;
     /* Point filter on the tile atlas: bilinear sampling at the border of each
      * 150x150 cell bleeds pixels from the neighbouring cell, which shows up as
@@ -196,7 +213,8 @@ void draw_game(void) {
     if (ty_end   > GRID_HEIGHT)ty_end   = GRID_HEIGHT;
 
     /* All tiles share a single texture → raylib batches them into one
-     * GPU draw call. If tiles.png failed to load, nothing is drawn here. */
+     * GPU draw call. CMake copies tiles.png next to the binary, so this
+     * branch always runs in a proper build. */
     if (tiles_atlas_loaded) {
         /* Two anti-seam tricks for atlases drawn through a Camera2D:
          *   1. src inset by 0.5 px: even with POINT filtering, sampling right
@@ -234,8 +252,7 @@ void draw_game(void) {
         pthread_mutex_unlock(&gl_tiles_lock);
     }
 
-    /* Bot — drawn in world space, size in world units so Camera2D scales.
-     * If bots.png failed to load, nothing is drawn here. */
+    /* Bot — drawn in world space, size in world units so Camera2D scales. */
     if (bot_sprite_loaded) {
         float bot_draw_world = (float)BOT_RADIUS * 1.5f;
         int idx = ((int)snap_state >= 0 && (int)snap_state < BOT_STATE_SPRITES)
