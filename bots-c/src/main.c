@@ -101,9 +101,10 @@ static void draw_log_panel(int x, int y, int w, int h) {
         off += snprintf(buf + off, sizeof(buf) - off, "> %s\n", lines[i]);
         if (off >= (int)sizeof(buf) - 2) break;
     }
-    /* SYSLOG sits over the map, so use a noticeably more transparent fill
-     * than UI_BG (alpha 230 → ~110) to reveal the terrain underneath. */
-    Color syslog_bg = (Color){ UI_BG.r, UI_BG.g, UI_BG.b, 110 };
+    /* SYSLOG sits over the map. UI_BG alpha is 230; we darken it enough
+     * to stay readable over bright terrain while still showing some of
+     * the map underneath. */
+    Color syslog_bg = (Color){ UI_BG.r, UI_BG.g, UI_BG.b, 155 };
     draw_hud_text_panel_ex(x, y, w, h, "SYSLOG", buf, /*wrap=*/false,
                            syslog_bg);
 }

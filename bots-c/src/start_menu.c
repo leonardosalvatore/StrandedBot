@@ -214,12 +214,15 @@ bool start_menu_update(void) {
     if (show_custom_prompt) {
         GuiLabel((Rectangle){lx, y, win_w - 40, row_h}, "> CUSTOM PROMPT:");
         y += row_h;
-        int prev_wrap = GuiGetStyle(DEFAULT, TEXT_WRAP_MODE);
-        GuiSetStyle(DEFAULT, TEXT_WRAP_MODE, TEXT_WRAP_WORD);
+        /* IMPORTANT: raygui 4.0 GuiTextBox silently refuses input whenever
+         * TEXT_WRAP_MODE != TEXT_WRAP_NONE (see raygui.h, ~line 2492). The
+         * previous version set TEXT_WRAP_WORD here, which made the box
+         * completely uneditable. raygui 4.0 textboxes are single-line and
+         * scroll horizontally when the text exceeds the width; long
+         * prompts are fine, they just aren't visually wrapped. */
         if (GuiTextBox((Rectangle){lx, y, win_w - 40, 80},
                        buf_prompt, sizeof(buf_prompt), edit_prompt))
             edit_prompt = !edit_prompt;
-        GuiSetStyle(DEFAULT, TEXT_WRAP_MODE, prev_wrap);
         y += 88;
         if (GuiButton((Rectangle){lx, y, 260, row_h + 3},
                       ">> CONFIRM & RUN <<")) {

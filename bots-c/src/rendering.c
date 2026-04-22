@@ -295,7 +295,10 @@ void draw_game(void) {
                     (float)TILE_SIZE + DST_BLEED,
                     (float)TILE_SIZE + DST_BLEED,
                 };
-                Color tint = t->fog ? (Color){85, 85, 85, 255} : WHITE;
+                /* Fog of war: multiply the sampled tile colour by this
+                 * tint. A much darker grey makes undiscovered terrain
+                 * obviously unexplored without blacking it out. */
+                Color tint = t->fog ? (Color){28, 30, 34, 255} : WHITE;
                 DrawTexturePro(tiles_atlas, src, dst, (Vector2){0, 0},
                                0.0f, tint);
             }
