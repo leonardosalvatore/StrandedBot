@@ -6,10 +6,7 @@ tries to stay charged through periodic solar flares. The game runs in native
 C with raylib; the model runs locally via `llama.cpp`'s OpenAI-compatible
 server.
 
-[Short video demo (YouTube)](https://youtu.be/esa-aX58YaI) ·
-[Tower-defense mode demo (YouTube)](https://youtu.be/aLs3Lp73xuk)
-
-![Screenshot](bots-c/resources/bots.png)
+[Short video demo (YouTube)](https://www.youtube.com/shorts/6EPWKLKFVEY) ·
 
 ## Requirements
 
