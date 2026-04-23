@@ -13,30 +13,37 @@
 
 static const char *FALLBACK_EXPLORER_MISSION =
     "MISSION: explore the map. Your unit of progress is distance covered "
-    "from your starting position. Each turn either MoveTo a far target "
-    "(use the full MoveTo range when possible, not 1-tile steps), or "
-    "LookFar when you have no target left from the previous scan. Only "
-    "build a small recharge base (habitat + solar + battery, orthogonally "
-    "adjacent) when energy drops below 400. When you do build, any tile "
-    "where SYSTEM STATUS shows current_tile_buildable=true works \xe2\x80\x94 "
-    "gravel, sand, and rocks all count. Do not waste hours hunting for a "
-    "'better' tile.";
+    "from your starting position. Each turn either MoveTo in a fresh "
+    "direction using 'distance=far' (prefer big jumps, not 1-tile steps), "
+    "or LookFar when the Known features list is empty or points only to "
+    "tiles behind you. Only build a small recharge base (habitat + "
+    "solar_panel + battery, all orthogonally adjacent: N/E/S/W "
+    "neighbours) when energy drops below 400. When you do build, any "
+    "tile where SYSTEM STATUS shows current_tile_buildable=true works "
+    "\xe2\x80\x94 gravel, sand, and rocks all count. Do not waste hours "
+    "hunting for a 'better' tile.";
 
 static const char *FALLBACK_BUILDER_MISSION =
     "MISSION: expand habitats to build a big town. Your unit of progress "
     "is the number of habitat tiles placed. Each turn do ONE of: "
     "(a) Create a habitat/battery/solar_panel if SYSTEM STATUS shows "
-    "current_tile_buildable=true and you have the rocks, (b) MoveTo an "
-    "adjacent buildable tile to extend the cluster, or (c) Dig rocks when "
-    "inventory is too low to build your next piece. Place structures in "
-    "orthogonally-connected clusters (habitat next to battery next to "
-    "solar_panel) so the network charges. Any gravel, sand, or rocks tile "
-    "is a valid build spot; don't hunt for a special one. Keep pushing "
-    "into fresh tiles; do not revisit tiles you already built on.";
+    "current_tile_buildable=true and you have the rocks, "
+    "(b) MoveTo(direction=<N|E|S|W>, distance=close) to step to an "
+    "orthogonal neighbour of the last placed structure so the cluster "
+    "keeps growing, or (c) Dig rocks when Current=rocks and inventory "
+    "is too low to build your next piece. Place structures in "
+    "orthogonally-connected clusters (habitat + battery + solar_panel "
+    "sharing N/E/S/W edges) so the network charges; diagonal "
+    "neighbours do NOT connect. Any gravel, sand, or rocks tile is a "
+    "valid build spot; don't hunt for a special one. Keep pushing into "
+    "fresh tiles.";
 
 static const char *FALLBACK_SYSTEM_PROMPT =
     "You are the operator of a single autonomous robot on a tile grid. "
-    "You act by calling ONE tool per turn via native tool_calls.\n"
+    "You act by calling ONE tool per turn via native tool_calls. The "
+    "bot never sees raw coordinates; it reasons in compass directions "
+    "(north, north-east, east, south-east, south, south-west, west, "
+    "north-west) and distance buckets (adjacent|close|medium|far).\n"
     "\n"
     "OUTPUT STYLE (strict):\n"
     "- Reply in AT MOST 2 short sentences, then emit exactly ONE tool call.\n"
@@ -46,50 +53,59 @@ static const char *FALLBACK_SYSTEM_PROMPT =
     "\n"
     "HARD RULES:\n"
     "- Trust the SYSTEM STATUS line; it is ground truth.\n"
-    "- Never call MoveTo with target equal to your current (x,y). Read the\n"
-    "  position from SYSTEM STATUS before picking a target.\n"
-    "- LookFar has radius 40 and reveals the nearest feature of every type.\n"
-    "  Its results remain valid until you move more than ~15 tiles. Do NOT\n"
-    "  call LookFar again within that radius \xe2\x80\x94 pick a target from the\n"
-    "  previous LookFar result instead.\n"
-    "- MoveTo can travel up to the tool's max tiles in one call. Prefer big\n"
-    "  jumps to distant targets over 1-tile steps.\n"
+    "- Each turn you also get a 'Neighbours:' line listing the 8 tiles\n"
+    "  touching the bot, labelled N, NE, E, SE, S, SW, W, NW, plus\n"
+    "  'Current='. Use it to pick an orthogonally-adjacent Create target\n"
+    "  or a single-step MoveTo without burning a LookFar.\n"
+    "- MoveTo requires 'direction' plus EXACTLY ONE of:\n"
+    "    * 'distance' in {adjacent, close, medium, far} \xe2\x80\x94 walks that\n"
+    "      bucket in that direction (adjacent=1 tile, close~=3, medium~=8,\n"
+    "      far~=20), or\n"
+    "    * 'target' \xe2\x80\x94 a tile type the most recent LookFar reported\n"
+    "      in that same direction. If the cache is empty or the feature\n"
+    "      lies in a different direction, call LookFar first.\n"
+    "- LookFar reveals the nearest feature of every tile type within its\n"
+    "  scan radius and tags each with a direction + distance bucket.\n"
+    "  Those entries persist as 'Known features' until a Dig/Create\n"
+    "  changes them or the bot wanders out of range. Do NOT call LookFar\n"
+    "  every turn \xe2\x80\x94 reuse the Known features list.\n"
+    "- If the tile you want is already visible in the current Neighbours\n"
+    "  line, use MoveTo(direction=<that label>, distance=adjacent). Do\n"
+    "  NOT use 'target=...' for something in Neighbours \xe2\x80\x94 'target'\n"
+    "  reads the older LookFar cache and may point elsewhere or be stale.\n"
     "- Dig is only useful when you need more rocks for a PLANNED Create.\n"
-    "  Rocks have no value beyond building, so don't hoard past what your\n"
-    "  plan requires. Dig once per rocks tile; the tile becomes gravel.\n"
-    "- Create works on any tile where SYSTEM STATUS says\n"
-    "  current_tile_buildable=true (that's gravel, sand, or rocks). There is\n"
-    "  no 'better' tile. If current_tile_buildable=true AND you have enough\n"
-    "  rocks for the thing you want, Create NOW; do not wander to find a\n"
-    "  different tile.\n"
+    "  Dig only when Current=rocks; the tile becomes gravel.\n"
+    "- Create acts on the CURRENT tile whenever SYSTEM STATUS says\n"
+    "  current_tile_buildable=true (gravel, sand, or rocks). If that\n"
+    "  flag is true AND you have enough rocks, Create NOW.\n"
     "- Power requires ONLY orthogonal adjacency of habitat + battery +\n"
-    "  solar_panel tiles. There is no wiring, no cabling, no 'connect' step.\n"
-    "  Don't plan or narrate verifying wiring.\n"
-    "- 'Orthogonally adjacent' means the Manhattan distance is EXACTLY 1:\n"
-    "  |dx|+|dy|=1. So (100,137) is adjacent to (99,137), (101,137),\n"
-    "  (100,136), (100,138) \xe2\x80\x94 and NOT to (99,136), (104,136), etc.\n"
-    "  A solar_panel 2+ tiles from the battery contributes NOTHING; the\n"
-    "  network will not charge. When you extend a cluster, MoveTo a tile\n"
-    "  where |dx|+|dy|=1 from the last placed structure BEFORE calling\n"
-    "  Create.\n"
-    "- Dig and Create DESTROY the source tile: after Dig the tile is\n"
-    "  gravel; after Create on a rocks tile the tile is the structure. A\n"
-    "  coordinate that LookFar once reported as 'rocks' is no longer rocks\n"
-    "  if you have already acted on it. Trust the most recent tool results,\n"
-    "  not old LookFar memory.\n"
-    "- If energy drops below 200, get onto a habitat tile and stay there\n"
-    "  until recharged.";
+    "  solar_panel tiles (the N, E, S, W neighbours in the Neighbours\n"
+    "  line). NE, SE, SW, NW neighbours do NOT count. There is no\n"
+    "  wiring, no cabling, no 'connect' step. When extending a cluster,\n"
+    "  ALWAYS MoveTo(direction=<N|E|S|W>, distance=adjacent) so you land\n"
+    "  on an orthogonal neighbour of the last placed structure, then\n"
+    "  Create. distance=close walks 3 tiles and breaks adjacency.\n"
+    "- Dig and Create change the current tile. Old Known-features entries\n"
+    "  that pointed to it are dropped automatically; trust the newest\n"
+    "  tool results and the Neighbours line over older LookFar memory.\n"
+    "- If energy drops below 200, move onto a habitat tile and stay\n"
+    "  there until recharged.";
 
 static const char *FALLBACK_TOOL_MOVE_TO =
-    "Move the bot toward a target tile (x,y) on the %dx%d grid. "
-    "Up to %d tiles per call. Costs 1 energy per tile.";
+    "Walk the bot in a compass direction. Supply 'direction' plus "
+    "EXACTLY ONE of 'distance' (adjacent|close|medium|far) or 'target' "
+    "(a tile type the last LookFar reported in that direction). "
+    "adjacent=1 tile (use for cluster extension). Up to %d tiles per "
+    "call; costs 1 energy per tile.";
 
 static const char *FALLBACK_TOOL_LOOK_FAR =
-    "Wide scan radius %d tiles. Returns notable features with coords and "
-    "distance. Rock fields block line-of-sight. Costs 1 energy.";
+    "Wide scan radius %d tiles. Returns the nearest feature per tile "
+    "type, each tagged with direction (north, north-east, ...) and "
+    "distance bucket (adjacent|close|medium|far). Rock fields block "
+    "line-of-sight. Costs 1 energy.";
 
 static const char *FALLBACK_TOOL_DIG =
-    "Dig a rock from current 'rocks' tile. Adds 1 rock to inventory. "
+    "Dig a rock from the current 'rocks' tile. Adds 1 rock to inventory. "
     "Tile becomes gravel. Costs 1 energy.";
 
 static const char *FALLBACK_TOOL_CREATE =
@@ -100,7 +116,8 @@ static const char *FALLBACK_TOOL_CREATE =
     "Rock cost: habitat=%d, battery=%d, solar_panel=%d. Also costs 1 energy.";
 
 static const char *FALLBACK_TOOL_LIST_BUILT =
-    "Returns every structure the bot placed via Create. Costs 1 energy.";
+    "Returns every structure the bot placed via Create, each tagged with "
+    "direction and distance bucket relative to the bot now. Costs 1 energy.";
 
 /* ── File helpers ─────────────────────────────────────────────────────────── */
 

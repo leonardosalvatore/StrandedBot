@@ -88,6 +88,12 @@ static char            reply_buf[4096] = "";
 static volatile bool   reply_ready = false;
 static double          reply_deadline = 0.0;
 
+/* Persistent compose-box queue. Messages typed by the user between turns
+ * are concatenated here; the agent drains this buffer at the start of
+ * each turn and appends it as a "user" message to the LLM conversation. */
+static pthread_mutex_t queued_user_mtx = PTHREAD_MUTEX_INITIALIZER;
+static char            queued_user_buf[4096] = "";
+
 /* Curl replaced by POSIX socket http_post. */
 
 /* ── Byte-budget trim ────────────────────────────────────────────────────── */
@@ -232,18 +238,23 @@ static cJSON *build_tools_json(void) {
 
     /* Pull tool-description templates from the active config (if any);
      * fallbacks match the previously hardcoded strings so the agent still
-     * works before main() sets the active config. */
+     * works before main() sets the active config. All descriptions now
+     * speak compass directions and distance buckets; no (x,y). */
     const BotsConfig *cfg = config_active();
     const char *t_move =
         (cfg && cfg->prompts.tool_move_to[0])
             ? cfg->prompts.tool_move_to
-            : "Move the bot toward a target tile (x,y) on the %dx%d grid. "
-              "Up to %d tiles per call. Costs 1 energy per tile.";
+            : "Walk the bot in a compass direction. Supply 'direction' plus "
+              "EXACTLY ONE of 'distance' (close|medium|far) or 'target' "
+              "(a tile type the last LookFar reported in that direction). "
+              "Up to %d tiles per call; costs 1 energy per tile.";
     const char *t_look_far =
         (cfg && cfg->prompts.tool_look_far[0])
             ? cfg->prompts.tool_look_far
-            : "Wide scan radius %d tiles. Returns notable features with coords "
-              "and distance. Rock fields block line-of-sight. Costs 1 energy.";
+            : "Wide scan radius %d tiles. Returns nearest feature per tile "
+              "type, each tagged with direction (north, north-east, ...) and "
+              "distance bucket (close|medium|far). Rock fields block "
+              "line-of-sight. Costs 1 energy.";
     const char *t_dig =
         (cfg && cfg->prompts.tool_dig[0])
             ? cfg->prompts.tool_dig
@@ -259,26 +270,81 @@ static cJSON *build_tools_json(void) {
     const char *t_list =
         (cfg && cfg->prompts.tool_list_built_tiles[0])
             ? cfg->prompts.tool_list_built_tiles
-            : "Returns every structure the bot placed via Create. Costs 1 energy.";
+            : "Returns every structure the bot placed via Create, each with "
+              "direction and distance relative to the bot now. Costs 1 energy.";
 
-    /* Format %d slots from the templates. Strings without placeholders are
-     * unaffected; extra printf args are ignored, so user edits that drop
-     * placeholders remain safe. */
     char move_desc[768];
-    snprintf(move_desc, sizeof(move_desc), t_move,
-             GRID_WIDTH, GRID_HEIGHT, MOVE_MAX_TILES);
-    ADD_TOOL("MoveTo", move_desc, {
-        cJSON *px = cJSON_CreateObject();
-        cJSON_AddStringToObject(px, "type", "integer");
-        cJSON_AddStringToObject(px, "description", "Target tile X index.");
-        cJSON_AddItemToObject(props, "target_x", px);
-        cJSON *py_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(py_obj, "type", "integer");
-        cJSON_AddStringToObject(py_obj, "description", "Target tile Y index.");
-        cJSON_AddItemToObject(props, "target_y", py_obj);
-        cJSON_AddItemToArray(req, cJSON_CreateString("target_x"));
-        cJSON_AddItemToArray(req, cJSON_CreateString("target_y"));
-    });
+    snprintf(move_desc, sizeof(move_desc), t_move, MOVE_MAX_TILES);
+    /* Commas inside array initialisers are treated as macro-argument
+     * separators, so we build MoveTo's parameters without ADD_TOOL and
+     * then push it onto the tools array manually. */
+    {
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddStringToObject(t, "type", "function");
+        cJSON *fn = cJSON_CreateObject();
+        cJSON_AddStringToObject(fn, "name", "MoveTo");
+        cJSON_AddStringToObject(fn, "description", move_desc);
+        cJSON *params = cJSON_CreateObject();
+        cJSON_AddStringToObject(params, "type", "object");
+        cJSON *props = cJSON_CreateObject();
+        cJSON *req = cJSON_CreateArray();
+
+        cJSON *pd = cJSON_CreateObject();
+        cJSON_AddStringToObject(pd, "type", "string");
+        cJSON_AddStringToObject(pd, "description",
+            "Compass direction: north, north-east, east, south-east, south, "
+            "south-west, west, or north-west.");
+        cJSON *pd_enum = cJSON_CreateArray();
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("north"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("north-east"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("east"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("south-east"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("south"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("south-west"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("west"));
+        cJSON_AddItemToArray(pd_enum, cJSON_CreateString("north-west"));
+        cJSON_AddItemToObject(pd, "enum", pd_enum);
+        cJSON_AddItemToObject(props, "direction", pd);
+
+        cJSON *pdist = cJSON_CreateObject();
+        cJSON_AddStringToObject(pdist, "type", "string");
+        cJSON_AddStringToObject(pdist, "description",
+            "How far to walk: adjacent=1 tile (use for cluster extension), "
+            "close~=3, medium~=8, far~=20. Exactly one of 'distance' or "
+            "'target' must be present.");
+        cJSON *pdist_enum = cJSON_CreateArray();
+        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("adjacent"));
+        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("close"));
+        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("medium"));
+        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("far"));
+        cJSON_AddItemToObject(pdist, "enum", pdist_enum);
+        cJSON_AddItemToObject(props, "distance", pdist);
+
+        cJSON *ptgt = cJSON_CreateObject();
+        cJSON_AddStringToObject(ptgt, "type", "string");
+        cJSON_AddStringToObject(ptgt, "description",
+            "Tile type to approach; must match a feature the last LookFar "
+            "reported in the chosen direction. Exactly one of 'distance' "
+            "or 'target' must be present.");
+        cJSON *ptgt_enum = cJSON_CreateArray();
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("rocks"));
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("water"));
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("sand"));
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("gravel"));
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("habitat"));
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("battery"));
+        cJSON_AddItemToArray(ptgt_enum, cJSON_CreateString("solar_panel"));
+        cJSON_AddItemToObject(ptgt, "enum", ptgt_enum);
+        cJSON_AddItemToObject(props, "target", ptgt);
+
+        cJSON_AddItemToArray(req, cJSON_CreateString("direction"));
+
+        cJSON_AddItemToObject(params, "properties", props);
+        cJSON_AddItemToObject(params, "required", req);
+        cJSON_AddItemToObject(fn, "parameters", params);
+        cJSON_AddItemToObject(t, "function", fn);
+        cJSON_AddItemToArray(tools, t);
+    }
 
     char lf_desc[384];
     snprintf(lf_desc, sizeof(lf_desc), t_look_far, gl_bot_lookfar_distance);
@@ -483,13 +549,68 @@ static cJSON *tool_calls_from_content(const char *content) {
 /* ── Dispatch a single tool call ─────────────────────────────────────────── */
 static ToolResult dispatch_tool(const char *name, cJSON *args) {
     if (strcmp(name, "MoveTo") == 0) {
-        int tx = 0, ty = 0;
-        cJSON *jx = cJSON_GetObjectItem(args, "target_x");
-        cJSON *jy = cJSON_GetObjectItem(args, "target_y");
-        if (jx) tx = jx->valueint;
-        if (jy) ty = jy->valueint;
         gl_bot_state = BOT_MOVING;
-        return gl_move_to(tx, ty);
+        /* New direction-based schema. Legacy (target_x, target_y) payloads
+         * from models that ignore the enum are rejected explicitly so the
+         * LLM gets a pointed error rather than a silent no-op. */
+        cJSON *jdir = cJSON_GetObjectItem(args, "direction");
+        cJSON *jdist = cJSON_GetObjectItem(args, "distance");
+        cJSON *jtgt = cJSON_GetObjectItem(args, "target");
+        const char *dir_s = (jdir && cJSON_IsString(jdir)) ? jdir->valuestring : NULL;
+        const char *dist_s = (jdist && cJSON_IsString(jdist)) ? jdist->valuestring : NULL;
+        const char *tgt_s = (jtgt && cJSON_IsString(jtgt)) ? jtgt->valuestring : NULL;
+
+        ToolResult r = {0};
+        if (!dir_s || !dir_s[0]) {
+            snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                "{\"ok\":false,\"error\":\"MoveTo requires 'direction' "
+                "(north, north-east, east, south-east, south, south-west, "
+                "west, north-west).\"}");
+            return r;
+        }
+        bool has_dist = (dist_s && dist_s[0]);
+        bool has_tgt  = (tgt_s  && tgt_s[0]);
+        if (has_dist && has_tgt) {
+            snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                "{\"ok\":false,\"error\":\"MoveTo needs exactly one of "
+                "'distance' or 'target', not both.\"}");
+            return r;
+        }
+        if (!has_dist && !has_tgt) {
+            snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                "{\"ok\":false,\"error\":\"MoveTo needs 'distance' "
+                "(adjacent|close|medium|far) or 'target' (a tile type "
+                "seen in the last LookFar).\"}");
+            return r;
+        }
+        Direction dir = direction_from_name(dir_s);
+        if (dir == DIR_NONE) {
+            snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                "{\"ok\":false,\"error\":\"Unknown direction '%s'.\"}", dir_s);
+            return r;
+        }
+        if (has_dist) {
+            DistBucket db = dist_bucket_from_name(dist_s);
+            if (db == DIST_NONE) {
+                snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                    "{\"ok\":false,\"error\":\"Unknown distance '%s' (use "
+                    "adjacent, close, medium, or far).\"}", dist_s);
+                return r;
+            }
+            return gl_move_direction_bucket(dir, db);
+        }
+        /* has_tgt */
+        TileType tt = tile_type_from_name(tgt_s);
+        /* tile_type_from_name falls back to TILE_GRAVEL on unknown input;
+         * detect that explicitly so bogus targets don't silently march to
+         * the nearest gravel. */
+        if (strcmp(tgt_s, tile_type_name(tt)) != 0) {
+            snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                "{\"ok\":false,\"error\":\"Unknown target tile type '%s'.\"}",
+                tgt_s);
+            return r;
+        }
+        return gl_move_direction_target(dir, tt);
     }
     if (strcmp(name, "LookFar") == 0) {
         gl_bot_state = BOT_LOOKFAR;
@@ -526,7 +647,10 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
  * active_system_prompt() below. */
 static const char *SYSTEM_PROMPT_FALLBACK =
     "You are the operator of a single autonomous robot on a tile grid. "
-    "You act by calling ONE tool per turn via native tool_calls.\n"
+    "You act by calling ONE tool per turn via native tool_calls. The bot "
+    "never sees raw coordinates; it reasons in compass directions "
+    "(north, north-east, east, south-east, south, south-west, west, "
+    "north-west) and distance buckets (adjacent|close|medium|far).\n"
     "\n"
     "OUTPUT STYLE (strict):\n"
     "- Reply in AT MOST 2 short sentences, then emit exactly ONE tool call.\n"
@@ -536,42 +660,42 @@ static const char *SYSTEM_PROMPT_FALLBACK =
     "\n"
     "HARD RULES:\n"
     "- Trust the SYSTEM STATUS line; it is ground truth.\n"
-    "- Each turn you also get a VISIBLE 3x3 map centered on the bot ('@').\n"
-    "  Read it to pick an orthogonally-adjacent Create target or a 1-tile\n"
-    "  MoveTo step without burning a LookFar. For anything beyond the 8\n"
-    "  neighbours, use LookFar. Glyphs: .=gravel ,=sand ~=water #=rocks\n"
-    "  H=habitat B=battery S=solar_panel X=broken_habitat ?=off_map.\n"
-    "- Never call MoveTo with target equal to your current (x,y). Read the\n"
-    "  position from SYSTEM STATUS before picking a target.\n"
-    "- LookFar has radius 40 and reveals the nearest feature of every type.\n"
-    "  Its results remain valid until you move more than ~15 tiles. Do NOT\n"
-    "  call LookFar again within that radius — pick a target from the\n"
-    "  previous LookFar result instead.\n"
-    "- MoveTo can travel up to the tool's max tiles in one call. Prefer big\n"
-    "  jumps to distant targets over 1-tile steps.\n"
+    "- Each turn you get a 'Neighbours:' line listing the 8 tiles touching\n"
+    "  the bot, labelled N, NE, E, SE, S, SW, W, NW, plus 'Current='.\n"
+    "  Use it to pick an orthogonally-adjacent Create target or a\n"
+    "  one-step MoveTo without burning a LookFar.\n"
+    "- MoveTo needs a 'direction' plus EXACTLY ONE of:\n"
+    "    * 'distance' in {adjacent, close, medium, far} — walks that bucket\n"
+    "      in that direction (adjacent=1 tile, close≈3, medium≈8, far≈20),\n"
+    "      or\n"
+    "    * 'target' — a tile type the most recent LookFar reported in that\n"
+    "      same direction. If the cache is empty or the feature is in a\n"
+    "      different direction, call LookFar first.\n"
+    "- LookFar reveals the nearest feature of every type within the scan\n"
+    "  radius and tags each with direction + distance bucket. Its results\n"
+    "  are kept as 'Known features' until you act in a way that changes\n"
+    "  those tiles (Dig, Create) or the bot wanders out of range. Do NOT\n"
+    "  call LookFar every turn — re-use the Known features list.\n"
+    "- If the tile you want is already visible in the current Neighbours\n"
+    "  line, use MoveTo(direction=<that label>, distance=adjacent). Do NOT\n"
+    "  use 'target=...' for something in Neighbours — 'target' reads the\n"
+    "  older LookFar cache and may point elsewhere or be stale.\n"
     "- Dig is only useful when you need more rocks for a PLANNED Create.\n"
     "  Rocks have no value beyond building, so don't hoard past what your\n"
-    "  plan requires. Dig once per rocks tile; the tile becomes gravel.\n"
-    "- Create works on any tile where SYSTEM STATUS says\n"
-    "  current_tile_buildable=true (that's gravel, sand, or rocks). There is\n"
-    "  no 'better' tile. If current_tile_buildable=true AND you have enough\n"
-    "  rocks for the thing you want, Create NOW; do not wander to find a\n"
-    "  different tile.\n"
+    "  plan requires. Dig only when Current=rocks; the tile becomes gravel.\n"
+    "- Create works on the CURRENT tile whenever SYSTEM STATUS says\n"
+    "  current_tile_buildable=true (gravel, sand, or rocks). If that flag\n"
+    "  is true AND you have enough rocks for the structure, Create NOW;\n"
+    "  do not wander looking for a 'better' tile.\n"
     "- Power requires ONLY orthogonal adjacency of habitat + battery +\n"
-    "  solar_panel tiles. There is no wiring, no cabling, no 'connect' step.\n"
-    "  Don't plan or narrate verifying wiring.\n"
-    "- 'Orthogonally adjacent' means the Manhattan distance is EXACTLY 1:\n"
-    "  |dx|+|dy|=1. So (100,137) is adjacent to (99,137), (101,137),\n"
-    "  (100,136), (100,138) — and NOT to (99,136), (104,136), etc.\n"
-    "  A solar_panel 2+ tiles from the battery contributes NOTHING; the\n"
-    "  network will not charge. When you extend a cluster, MoveTo a tile\n"
-    "  where |dx|+|dy|=1 from the last placed structure BEFORE calling\n"
-    "  Create.\n"
-    "- Dig and Create DESTROY the source tile: after Dig the tile is\n"
-    "  gravel; after Create on a rocks tile the tile is the structure. A\n"
-    "  coordinate that LookFar once reported as 'rocks' is no longer rocks\n"
-    "  if you have already acted on it. Trust the most recent tool results,\n"
-    "  not old LookFar memory.\n"
+    "  solar_panel tiles (|dx|+|dy|=1, i.e. N, E, S, or W neighbour). NE,\n"
+    "  SE, SW, NW neighbours do NOT count. There is no wiring, no cabling,\n"
+    "  no 'connect' step. When extending a cluster, step to an N/E/S/W\n"
+    "  neighbour of the last placed structure (use the Neighbours line)\n"
+    "  BEFORE calling Create.\n"
+    "- Dig and Create change the current tile. Old Known-features entries\n"
+    "  that pointed here are automatically dropped; trust the newest tool\n"
+    "  results and the Neighbours line over older LookFar memory.\n"
     "- If energy drops below 200, get onto a habitat tile and stay there\n"
     "  until recharged.";
 
@@ -637,71 +761,6 @@ static const char *wait_for_user_reply(void) {
 }
 
 /* Wrapper so agent thread can call consume_energy */
-/* ── Local surroundings view ─────────────────────────────────────────────
- * Renders a (2*R+1) x (2*R+1) ASCII snapshot of the tiles around the bot
- * so the LLM can plan spatially instead of having to infer the world from
- * LookFar samples. One glyph per tile is enough for a small model to read
- * and keeps the prompt tight. The grid is oriented the same way as the
- * in-game map: x grows to the right, y grows downward. */
-#define BOT_VISION_RADIUS 1
-
-static char tile_glyph(TileType t) {
-    switch (t) {
-        case TILE_GRAVEL:         return '.';
-        case TILE_SAND:           return ',';
-        case TILE_WATER:          return '~';
-        case TILE_ROCKS:          return '#';
-        case TILE_HABITAT:        return 'H';
-        case TILE_BATTERY:        return 'B';
-        case TILE_SOLAR_PANEL:    return 'S';
-        case TILE_BROKEN_HABITAT: return 'X';
-        default:                  return '?';
-    }
-}
-
-/* Writes up to `cap` bytes (incl. NUL) into `out`. Tiles outside the map
- * are rendered as '?'; the bot itself is rendered as '@'. The caller must
- * NOT hold gl_tiles_lock — this function takes it. */
-static void build_surroundings(char *out, size_t cap, int cx, int cy) {
-    if (cap == 0) return;
-    const int R = BOT_VISION_RADIUS;
-    int n = snprintf(out, cap,
-        "VISIBLE %dx%d around bot (bot='@' at center; rows top=y-%d down "
-        "to y+%d; cols left=x-%d right=x+%d; legend: .=gravel ,=sand "
-        "~=water #=rocks H=habitat B=battery S=solar_panel "
-        "X=broken_habitat ?=off_map):\n",
-        2*R+1, 2*R+1, R, R, R, R);
-    if (n < 0 || (size_t)n >= cap) { out[cap-1] = '\0'; return; }
-    size_t w = (size_t)n;
-
-    pthread_mutex_lock(&gl_tiles_lock);
-    for (int dy = -R; dy <= R; dy++) {
-        for (int dx = -R; dx <= R; dx++) {
-            int x = cx + dx, y = cy + dy;
-            char g;
-            if (dx == 0 && dy == 0) {
-                g = '@';
-            } else if (x < 0 || x >= GRID_WIDTH ||
-                       y < 0 || y >= GRID_HEIGHT) {
-                g = '?';
-            } else {
-                g = tile_glyph(gl_tile_matrix[x][y].type);
-            }
-            if (w + 2 >= cap) { /* leave room for '\n' + NUL */
-                pthread_mutex_unlock(&gl_tiles_lock);
-                out[cap-1] = '\0';
-                return;
-            }
-            out[w++] = g;
-        }
-        if (w + 2 >= cap) break;
-        out[w++] = '\n';
-    }
-    pthread_mutex_unlock(&gl_tiles_lock);
-    if (w >= cap) w = cap - 1;
-    out[w] = '\0';
-}
-
 static void consume_energy_wrapper(void) {
     gl_bot_energy--;
     if (gl_bot_energy < 0) gl_bot_energy = 0;
@@ -744,6 +803,21 @@ static void *agent_loop(void *arg) {
         gl_bot_state = BOT_THINKING;
         consume_energy_wrapper();
 
+        /* Drain the compose-box queue: inject any user-typed messages
+         * into the conversation BEFORE we build this turn's SYSTEM STATUS
+         * so the bot sees the new instruction on this very hour. */
+        pthread_mutex_lock(&queued_user_mtx);
+        if (queued_user_buf[0]) {
+            char injected[sizeof(queued_user_buf)];
+            snprintf(injected, sizeof(injected), "%s", queued_user_buf);
+            queued_user_buf[0] = '\0';
+            pthread_mutex_unlock(&queued_user_mtx);
+            msg_log("  [User] %s", injected);
+            append_msg("user", injected, hour);
+        } else {
+            pthread_mutex_unlock(&queued_user_mtx);
+        }
+
         /* Build status grounding */
         int gx, gy;
         gl_bot_grid_pos(&gx, &gy);
@@ -753,7 +827,6 @@ static void *agent_loop(void *arg) {
         pthread_mutex_lock(&gl_tiles_lock);
         TileType cur_tile_type = gl_tile_matrix[gx][gy].type;
         pthread_mutex_unlock(&gl_tiles_lock);
-        const char *cur_tile = tile_type_name(cur_tile_type);
         /* Derived: can Create run here? Mirrors the checks in gl_create so
          * the bot sees the answer directly instead of having to infer it
          * from the tile name. Gravel, sand, and rocks are all valid; water,
@@ -789,45 +862,47 @@ static void *agent_loop(void *arg) {
                 "habitat cluster is missing a solar_panel orthogonally "
                 "connected; |dx|+|dy|=1 required)");
         }
-        /* Local vision window (3x3 by default). Prepended to the status
-         * message so the model sees the spatial context before the
-         * scalar fields. */
-        char surround[1024];
-        build_surroundings(surround, sizeof(surround), gx, gy);
+        /* Compass-labelled neighbours line — replaces the old 3x3 glyph
+         * grid. Mirrored verbatim to stdout + SYSLOG so operators see
+         * exactly what the LLM sees. */
+        char neighbours[384];
+        gl_build_neighbours_line(neighbours, sizeof(neighbours));
+        msg_log("  %s", neighbours);
 
-        /* Echo the exact surroundings string to stdout + SYSLOG, one
-         * msg_log line per '\n'-delimited row, so operators see the same
-         * grid the LLM sees. msg_log adds its own terminating newline. */
-        {
-            const char *s = surround;
-            while (*s) {
-                const char *nl = strchr(s, '\n');
-                size_t len = nl ? (size_t)(nl - s) : strlen(s);
-                if (len > 0) {
-                    char line[512];
-                    if (len >= sizeof(line)) len = sizeof(line) - 1;
-                    memcpy(line, s, len);
-                    line[len] = '\0';
-                    msg_log("  %s", line);
-                }
-                if (!nl) break;
-                s = nl + 1;
-            }
-        }
+        /* Optional "Known features" line from the last LookFar cache. When
+         * no LookFar has been called yet this stays empty. */
+        char known[512];
+        gl_build_known_features_summary(known, sizeof(known));
+        if (known[0]) msg_log("  Known features: %s", known);
 
         char status[2560];
-        snprintf(status, sizeof(status),
-            "%s"
-            "SYSTEM STATUS (truth source): hour=%d, energy=%d, position=(%d,%d), "
-            "tile=%s, current_tile_buildable=%s, inventory_rocks=%d, "
-            "hours_to_solar_flare=%d, %s",
-            surround,
-            gl_bot_hour_count, gl_bot_energy, gx, gy,
-            cur_tile,
-            cur_buildable ? "true" : "false",
-            gl_bot_inventory_rocks,
-            gl_hours_to_solar_flare,
-            charge_field);
+        if (known[0]) {
+            snprintf(status, sizeof(status),
+                "SYSTEM STATUS (truth source): hour=%d, energy=%d, "
+                "current_tile_buildable=%s, inventory_rocks=%d, "
+                "hours_to_solar_flare=%d, %s.\n"
+                "%s\n"
+                "Known features (last LookFar): %s",
+                gl_bot_hour_count, gl_bot_energy,
+                cur_buildable ? "true" : "false",
+                gl_bot_inventory_rocks,
+                gl_hours_to_solar_flare,
+                charge_field,
+                neighbours,
+                known);
+        } else {
+            snprintf(status, sizeof(status),
+                "SYSTEM STATUS (truth source): hour=%d, energy=%d, "
+                "current_tile_buildable=%s, inventory_rocks=%d, "
+                "hours_to_solar_flare=%d, %s.\n"
+                "%s",
+                gl_bot_hour_count, gl_bot_energy,
+                cur_buildable ? "true" : "false",
+                gl_bot_inventory_rocks,
+                gl_hours_to_solar_flare,
+                charge_field,
+                neighbours);
+        }
 
         /* Persist status grounding as a user message in history so subsequent
          * turns see a clean user/assistant alternation (required by mistral
@@ -1069,6 +1144,23 @@ void llm_agent_submit_reply(const char *text) {
     reply_ready = true;
     waiting_reply = false;
     pthread_mutex_unlock(&reply_mtx);
+}
+
+void llm_agent_queue_user_message(const char *text) {
+    if (!text || !text[0]) return;
+    pthread_mutex_lock(&queued_user_mtx);
+    size_t used = strlen(queued_user_buf);
+    size_t cap = sizeof(queued_user_buf) - 1;
+    if (used > 0 && used < cap) {
+        queued_user_buf[used++] = '\n';
+        queued_user_buf[used] = '\0';
+    }
+    size_t room = cap - used;
+    if (room > 0) {
+        strncpy(queued_user_buf + used, text, room);
+        queued_user_buf[cap] = '\0';
+    }
+    pthread_mutex_unlock(&queued_user_mtx);
 }
 
 bool llm_agent_waiting_for_reply(void) {

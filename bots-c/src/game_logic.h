@@ -78,6 +78,41 @@ typedef struct {
     char json[TOOL_RESULT_MAX_LEN];
 } ToolResult;
 
+/* ── Direction / distance vocabulary ─────────────────────────────────────── */
+/* 8-way compass directions used in all LLM-facing strings. The game grid
+ * has y growing downward, so DIR_N corresponds to dy<0. */
+typedef enum {
+    DIR_NONE = 0,
+    DIR_N, DIR_NE, DIR_E, DIR_SE,
+    DIR_S, DIR_SW, DIR_W, DIR_NW,
+    DIR_COUNT
+} Direction;
+
+/* Distance buckets replace numeric tile counts in every LLM-facing string.
+ *   adjacent : exactly 1 tile (orthogonal N/E/S/W or diagonal NE/NW/SE/SW
+ *              neighbour of the bot; used for cluster extension)
+ *   close    : 2-5 tiles
+ *   medium   : 6-15 tiles
+ *   far      : 16+ tiles (clamped by MOVE_MAX_TILES in moves) */
+typedef enum {
+    DIST_NONE = 0,
+    DIST_ADJACENT,
+    DIST_CLOSE,
+    DIST_MEDIUM,
+    DIST_FAR,
+    DIST_COUNT
+} DistBucket;
+
+const char *direction_name(Direction d);            /* e.g. "north-east" */
+Direction   direction_from_delta(int dx, int dy);   /* 8-bin atan2 */
+Direction   direction_from_name(const char *s);     /* parses many forms */
+void        direction_unit(Direction d, int *dx, int *dy);
+
+const char *dist_bucket_name(DistBucket b);         /* "close" */
+DistBucket  dist_bucket_from_tiles(int tiles);      /* thresholds */
+int         dist_bucket_walk_tiles(DistBucket b);   /* suggested step size */
+DistBucket  dist_bucket_from_name(const char *s);
+
 /* ── Global world state (accessed from multiple threads; use gl_tiles_lock) ─ */
 extern Tile         gl_tile_matrix[GRID_WIDTH][GRID_HEIGHT];
 extern pthread_mutex_t gl_tiles_lock;
@@ -122,11 +157,21 @@ void  gl_update(float dt);
 
 /* Tools */
 ToolResult gl_move_to(int target_x, int target_y);
+ToolResult gl_move_direction_bucket(Direction dir, DistBucket dist);
+ToolResult gl_move_direction_target(Direction dir, TileType target_type);
 ToolResult gl_look_close(void);
 ToolResult gl_look_far(void);
 ToolResult gl_dig(void);
 ToolResult gl_create(const char *tile_type_str);
 ToolResult gl_list_built_tiles(void);
+
+/* Neighbours line: "Neighbours: N=gravel, NE=sand, ... . Current=gravel." */
+void gl_build_neighbours_line(char *out, size_t cap);
+
+/* Known-features summary populated from the last LookFar; empty string
+ * when the cache is empty. Each kept entry becomes one sentence, e.g.
+ * "Rocks south-west (close). Water north (medium)." */
+void gl_build_known_features_summary(char *out, size_t cap);
 
 /* Solar flare / hour */
 bool gl_advance_solar_flare_hour(int current_hour);
@@ -153,5 +198,36 @@ const char *tile_description(TileType t);
 
 /* Grid helpers */
 void gl_bot_grid_pos(int *gx, int *gy);
+/* Bot's initial spawn cell, captured by gl_initialize_world. */
+void gl_bot_spawn_grid_pos(int *gx, int *gy);
+
+/* ── Post-mortem summary ─────────────────────────────────────────────────── */
+/* End-of-run statistics assembled by walking gl_tile_matrix and
+ * gl_bot_built[]. Populated on demand by gl_compute_postmortem. */
+typedef struct {
+    int  hours_survived;
+    int  spawn_gx, spawn_gy;
+    int  final_gx, final_gy;
+    int  final_energy;
+    int  final_rocks;
+    bool destroyed_by_flare;   /* true if gl_bot_state==BOT_DESTROYED,
+                                * else the run ended on energy<=0 only. */
+    /* Exploration */
+    int  tiles_discovered;     /* fog=false cells */
+    int  tiles_total;          /* GRID_WIDTH * GRID_HEIGHT */
+    int  explore_min_gx, explore_max_gx;
+    int  explore_min_gy, explore_max_gy;
+    int  travel_chebyshev;     /* max(|final-spawn|) in tiles */
+    /* Structures */
+    int  built_habitats;
+    int  built_batteries;
+    int  built_solar_panels;
+    int  built_total;
+    int  powered_clusters;     /* habitat groups with >=1 battery AND
+                                * >=1 solar_panel reachable by orthogonal
+                                * habitat+structure flood-fill. */
+} PostmortemStats;
+
+void gl_compute_postmortem(PostmortemStats *out);
 
 #endif /* GAME_LOGIC_H */

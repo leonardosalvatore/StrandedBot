@@ -140,6 +140,138 @@ static void draw_reply_dialog(void) {
     }
 }
 
+/* ── Persistent compose box ─────────────────────────────────────────────── */
+/* Always-visible input panel that lets the operator queue user-role
+ * messages into the LLM conversation. The agent drains the queue at the
+ * start of its next turn (see llm_agent_queue_user_message). Docked in
+ * the bottom-right corner, above the occasional reply dialog. */
+static char compose_text[4096] = "";
+static bool compose_edit = false;
+
+static void draw_compose_box(int dy_top) {
+    int sw = GetScreenWidth();
+    int dw = 450, dh = 140;
+    int dx = sw - dw - 10;
+    int dy = dy_top;
+    Rectangle r = {(float)dx, (float)dy, (float)dw, (float)dh};
+    ui_theme_draw_frame(r, "COMPOSE");
+
+    GuiLabel((Rectangle){dx + 12, dy + 22, dw - 24, 20},
+             "> queue a message for the bot");
+
+    if (GuiTextBox((Rectangle){dx + 12, dy + 46, dw - 24, 50}, compose_text,
+                   sizeof(compose_text), compose_edit))
+        compose_edit = !compose_edit;
+
+    if (GuiButton((Rectangle){dx + dw - 140, dy + dh - 35, 130, 28},
+                  ">> SEND <<")) {
+        if (compose_text[0]) {
+            llm_agent_queue_user_message(compose_text);
+            compose_text[0] = '\0';
+            compose_edit = false;
+        }
+    }
+}
+
+/* ── Post-mortem overlay ────────────────────────────────────────────────── */
+/* Shown once the bot is destroyed (solar flare → BOT_DESTROYED) or the
+ * run ends on energy==0. Draws a dimmed full-screen veil plus a centred
+ * "MISSION REPORT" panel listing survival time, exploration coverage,
+ * structure counts, and powered clusters. The user can dismiss the panel
+ * to inspect the frozen map, or close the window to exit. */
+static bool postmortem_shown_once = false;
+static bool show_postmortem = false;
+static bool quit_requested = false;
+static PostmortemStats postmortem_stats = {0};
+
+static bool run_is_over(void) {
+    return !llm_agent_running() &&
+           (gl_bot_state == BOT_DESTROYED || gl_bot_energy <= 0);
+}
+
+static void draw_postmortem_overlay(void) {
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    /* Dim veil so the frozen map stays visible behind the panel. */
+    DrawRectangle(0, 0, sw, sh, (Color){0, 0, 0, 170});
+
+    int pw = 560, ph = 430;
+    int px = (sw - pw) / 2, py = (sh - ph) / 2;
+    Rectangle r = { (float)px, (float)py, (float)pw, (float)ph };
+    const char *title = postmortem_stats.destroyed_by_flare
+                            ? "MISSION REPORT — DESTROYED BY SOLAR FLARE"
+                            : "MISSION REPORT — OUT OF ENERGY";
+    ui_theme_draw_frame(r, title);
+
+    const PostmortemStats *s = &postmortem_stats;
+    int explore_w = s->explore_max_gx - s->explore_min_gx + 1;
+    int explore_h = s->explore_max_gy - s->explore_min_gy + 1;
+    float coverage = s->tiles_total > 0
+                         ? 100.0f * (float)s->tiles_discovered /
+                               (float)s->tiles_total
+                         : 0.0f;
+
+    char buf[2048];
+    snprintf(buf, sizeof(buf),
+        "// TIMELINE\n"
+        "  hours survived     : %d\n"
+        "  spawn cell         : (%d, %d)\n"
+        "  final cell         : (%d, %d)\n"
+        "  distance travelled : %d tiles (Chebyshev)\n"
+        "  final energy       : %d\n"
+        "  final rocks        : %d\n"
+        "\n"
+        "// EXPLORATION\n"
+        "  tiles discovered   : %d / %d  (%.2f%% of map)\n"
+        "  bounding box       : %d x %d   (x %d..%d, y %d..%d)\n"
+        "\n"
+        "// STRUCTURES BUILT\n"
+        "  habitats           : %d\n"
+        "  batteries          : %d\n"
+        "  solar panels       : %d\n"
+        "  total placed       : %d\n"
+        "  powered clusters   : %d   (habitat + battery + solar_panel,\n"
+        "                             orthogonally connected)\n",
+        s->hours_survived,
+        s->spawn_gx, s->spawn_gy,
+        s->final_gx, s->final_gy,
+        s->travel_chebyshev,
+        s->final_energy,
+        s->final_rocks,
+        s->tiles_discovered, s->tiles_total, coverage,
+        explore_w, explore_h,
+        s->explore_min_gx, s->explore_max_gx,
+        s->explore_min_gy, s->explore_max_gy,
+        s->built_habitats,
+        s->built_batteries,
+        s->built_solar_panels,
+        s->built_total,
+        s->powered_clusters);
+
+    Rectangle body = { (float)(px + 20), (float)(py + 36),
+                       (float)(pw - 40), (float)(ph - 96) };
+    BeginScissorMode((int)body.x, (int)body.y,
+                     (int)body.width, (int)body.height);
+    int prev_wrap = GuiGetStyle(DEFAULT, TEXT_WRAP_MODE);
+    int prev_align = GuiGetStyle(DEFAULT, TEXT_ALIGNMENT);
+    GuiSetStyle(DEFAULT, TEXT_WRAP_MODE, TEXT_WRAP_NONE);
+    GuiSetStyle(DEFAULT, TEXT_ALIGNMENT, TEXT_ALIGN_LEFT);
+    GuiLabel(body, buf);
+    GuiSetStyle(DEFAULT, TEXT_WRAP_MODE, prev_wrap);
+    GuiSetStyle(DEFAULT, TEXT_ALIGNMENT, prev_align);
+    EndScissorMode();
+
+    if (GuiButton((Rectangle){(float)(px + 20),
+                              (float)(py + ph - 46), 180, 32},
+                  "VIEW MAP")) {
+        show_postmortem = false;
+    }
+    if (GuiButton((Rectangle){(float)(px + pw - 140),
+                              (float)(py + ph - 46), 120, 32},
+                  "EXIT")) {
+        quit_requested = true;
+    }
+}
+
 /* ── CLI autostart helpers ───────────────────────────────────────────────── */
 typedef enum {
     AUTOSTART_NONE = 0,
@@ -171,22 +303,30 @@ static void synthesise_result_from_cfg(const BotsConfig *cfg,
 /* ── Main ────────────────────────────────────────────────────────────────── */
 int main(int argc, char **argv) {
     AutostartMode autostart = AUTOSTART_NONE;
+    bool enable_llama_log = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--autostart-default") == 0) {
             autostart = AUTOSTART_DEFAULT;
         } else if (strcmp(argv[i], "--autostart-custom") == 0) {
             autostart = AUTOSTART_CUSTOM;
+        } else if (strcmp(argv[i], "--enable-llama-log") == 0) {
+            enable_llama_log = true;
         } else if (strcmp(argv[i], "--help") == 0 ||
                    strcmp(argv[i], "-h") == 0) {
-            printf("Usage: %s [--autostart-default|--autostart-custom]\n"
+            printf("Usage: %s [--autostart-default|--autostart-custom] "
+                   "[--enable-llama-log]\n"
                    "  --autostart-default  skip the start menu using "
                    "bots-defaults.json\n"
                    "  --autostart-custom   skip the start menu using "
-                   "bots-custom.json (falls back to defaults)\n",
+                   "bots-custom.json (falls back to defaults)\n"
+                   "  --enable-llama-log   pipe the auto-spawned "
+                   "llama-server's stdout/stderr to this terminal "
+                   "(muted by default)\n",
                    argv[0]);
             return 0;
         }
     }
+    llama_launcher_set_log_enabled(enable_llama_log);
 
     srand((unsigned)time(NULL));
     msg_log_init();
@@ -224,7 +364,7 @@ int main(int argc, char **argv) {
                 autostart == AUTOSTART_DEFAULT ? "defaults" : "custom");
     }
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !quit_requested) {
         float dt = GetFrameTime();
 
         /* Toggle fullscreen */
@@ -301,15 +441,41 @@ int main(int argc, char **argv) {
             draw_stats_panel(pad, pad, side_w, top_h);
             draw_log_panel(pad, sh - bot_h - pad, log_w, bot_h);
 
-            /* Interactive reply dialog */
+            /* Bottom-right stack: compose box (always) + reply dialog
+             * (only while the bot is awaiting an answer to a direct
+             * question). Compose sits on top so it never overlaps the
+             * reply dialog. */
+            int compose_h = 140;
+            int reply_h  = 160;
+            int stack_bottom = sh - 10;
             if (llm_agent_waiting_for_reply()) {
                 show_reply_dialog = true;
-            }
-            if (show_reply_dialog && llm_agent_waiting_for_reply()) {
-                draw_reply_dialog();
             } else {
                 show_reply_dialog = false;
             }
+            int reply_y = stack_bottom - reply_h;
+            int compose_y = show_reply_dialog
+                                ? reply_y - compose_h - 6
+                                : stack_bottom - compose_h;
+            draw_compose_box(compose_y);
+            if (show_reply_dialog) {
+                draw_reply_dialog();
+            }
+
+            /* Latch the post-mortem the first time the run terminates.
+             * We snapshot stats once (so the grid can continue rendering
+             * particles without changing the numbers) and re-show the
+             * modal on demand via a keypress. */
+            if (run_is_over() && !postmortem_shown_once) {
+                gl_compute_postmortem(&postmortem_stats);
+                postmortem_shown_once = true;
+                show_postmortem = true;
+            }
+            if (postmortem_shown_once && !show_postmortem &&
+                IsKeyPressed(KEY_R)) {
+                show_postmortem = true;
+            }
+            if (show_postmortem) draw_postmortem_overlay();
         }
 
         EndDrawing();
