@@ -101,6 +101,183 @@ int tile_build_cost(TileType t) {
     }
 }
 
+/* ── Direction / distance helpers ────────────────────────────────────────── */
+static const char *dir_long_names[DIR_COUNT] = {
+    [DIR_NONE] = "none",
+    [DIR_N]    = "north",
+    [DIR_NE]   = "north-east",
+    [DIR_E]    = "east",
+    [DIR_SE]   = "south-east",
+    [DIR_S]    = "south",
+    [DIR_SW]   = "south-west",
+    [DIR_W]    = "west",
+    [DIR_NW]   = "north-west",
+};
+
+static const char *dir_short_names[DIR_COUNT] = {
+    [DIR_NONE] = "",
+    [DIR_N]    = "N",
+    [DIR_NE]   = "NE",
+    [DIR_E]    = "E",
+    [DIR_SE]   = "SE",
+    [DIR_S]    = "S",
+    [DIR_SW]   = "SW",
+    [DIR_W]    = "W",
+    [DIR_NW]   = "NW",
+};
+
+const char *direction_name(Direction d) {
+    if (d < 0 || d >= DIR_COUNT) return "none";
+    return dir_long_names[d];
+}
+
+/* y grows downward in the grid, so "north" corresponds to dy<0. The
+ * classifier uses 8 bins of 45° each centred on the cardinal directions. */
+Direction direction_from_delta(int dx, int dy) {
+    if (dx == 0 && dy == 0) return DIR_NONE;
+    double angle = atan2((double)-dy, (double)dx); /* flip dy for y-down */
+    /* bins (in radians):
+     *   E  = [-pi/8, pi/8)
+     *   NE = [pi/8, 3pi/8)
+     *   N  = [3pi/8, 5pi/8)
+     *   NW = [5pi/8, 7pi/8)
+     *   W  = [7pi/8, pi] ∪ [-pi, -7pi/8)
+     *   SW = [-7pi/8, -5pi/8)
+     *   S  = [-5pi/8, -3pi/8)
+     *   SE = [-3pi/8, -pi/8) */
+    const double P = 3.14159265358979323846;
+    if (angle >= -P/8 && angle <  P/8) return DIR_E;
+    if (angle >=  P/8 && angle < 3*P/8) return DIR_NE;
+    if (angle >= 3*P/8 && angle < 5*P/8) return DIR_N;
+    if (angle >= 5*P/8 && angle < 7*P/8) return DIR_NW;
+    if (angle >= 7*P/8 || angle < -7*P/8) return DIR_W;
+    if (angle >= -7*P/8 && angle < -5*P/8) return DIR_SW;
+    if (angle >= -5*P/8 && angle < -3*P/8) return DIR_S;
+    return DIR_SE;
+}
+
+void direction_unit(Direction d, int *dx, int *dy) {
+    int ux = 0, uy = 0;
+    switch (d) {
+        case DIR_N:  uy = -1; break;
+        case DIR_NE: ux =  1; uy = -1; break;
+        case DIR_E:  ux =  1; break;
+        case DIR_SE: ux =  1; uy =  1; break;
+        case DIR_S:  uy =  1; break;
+        case DIR_SW: ux = -1; uy =  1; break;
+        case DIR_W:  ux = -1; break;
+        case DIR_NW: ux = -1; uy = -1; break;
+        default: break;
+    }
+    if (dx) *dx = ux;
+    if (dy) *dy = uy;
+}
+
+/* Accepts "n"/"N"/"north", "ne"/"north-east"/"northeast"/"north east", etc.
+ * Case-insensitive; '-' and ' ' are treated the same. */
+Direction direction_from_name(const char *s) {
+    if (!s || !s[0]) return DIR_NONE;
+    char norm[32] = {0};
+    size_t w = 0;
+    for (size_t i = 0; s[i] && w < sizeof(norm) - 1; i++) {
+        char c = s[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c == '-' || c == '_' || c == ' ') continue;
+        norm[w++] = c;
+    }
+    norm[w] = '\0';
+    if (!strcmp(norm, "n") || !strcmp(norm, "north")) return DIR_N;
+    if (!strcmp(norm, "ne") || !strcmp(norm, "northeast")) return DIR_NE;
+    if (!strcmp(norm, "e") || !strcmp(norm, "east")) return DIR_E;
+    if (!strcmp(norm, "se") || !strcmp(norm, "southeast")) return DIR_SE;
+    if (!strcmp(norm, "s") || !strcmp(norm, "south")) return DIR_S;
+    if (!strcmp(norm, "sw") || !strcmp(norm, "southwest")) return DIR_SW;
+    if (!strcmp(norm, "w") || !strcmp(norm, "west")) return DIR_W;
+    if (!strcmp(norm, "nw") || !strcmp(norm, "northwest")) return DIR_NW;
+    return DIR_NONE;
+}
+
+/* Centralised bucket thresholds. Tuning here updates both LookFar labels
+ * and MoveTo step sizes. */
+const char *dist_bucket_name(DistBucket b) {
+    switch (b) {
+        case DIST_ADJACENT: return "adjacent";
+        case DIST_CLOSE:    return "close";
+        case DIST_MEDIUM:   return "medium";
+        case DIST_FAR:      return "far";
+        default:            return "none";
+    }
+}
+
+DistBucket dist_bucket_from_tiles(int tiles) {
+    if (tiles <= 0) return DIST_NONE;
+    if (tiles <= 1) return DIST_ADJACENT;
+    if (tiles <= 5) return DIST_CLOSE;
+    if (tiles <= 15) return DIST_MEDIUM;
+    return DIST_FAR;
+}
+
+int dist_bucket_walk_tiles(DistBucket b) {
+    switch (b) {
+        case DIST_ADJACENT: return 1;
+        case DIST_CLOSE:    return 3;
+        case DIST_MEDIUM:   return 8;
+        case DIST_FAR:      return MOVE_MAX_TILES;
+        default:            return 0;
+    }
+}
+
+DistBucket dist_bucket_from_name(const char *s) {
+    if (!s || !s[0]) return DIST_NONE;
+    char norm[16] = {0};
+    size_t w = 0;
+    for (size_t i = 0; s[i] && w < sizeof(norm) - 1; i++) {
+        char c = s[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        norm[w++] = c;
+    }
+    norm[w] = '\0';
+    if (!strcmp(norm, "adjacent") || !strcmp(norm, "adj") ||
+        !strcmp(norm, "next")) return DIST_ADJACENT;
+    if (!strcmp(norm, "close") || !strcmp(norm, "near")) return DIST_CLOSE;
+    if (!strcmp(norm, "medium") || !strcmp(norm, "mid")) return DIST_MEDIUM;
+    if (!strcmp(norm, "far")) return DIST_FAR;
+    return DIST_NONE;
+}
+
+/* ── Feature memory (last LookFar cache) ─────────────────────────────────── */
+typedef struct {
+    bool       valid;
+    int        x, y;
+    Direction  dir;
+    DistBucket dist;
+    int        game_hour;
+} KnownFeature;
+
+static KnownFeature gl_last_lookfar[TILE_TYPE_COUNT];
+
+static void known_features_reset(void) {
+    for (int i = 0; i < TILE_TYPE_COUNT; i++) gl_last_lookfar[i].valid = false;
+}
+
+/* Invalidate any cache entry whose recorded (x,y) no longer matches that
+ * tile's actual type. Called opportunistically from read paths. */
+static void known_features_revalidate(void) {
+    pthread_mutex_lock(&gl_tiles_lock);
+    for (int i = 0; i < TILE_TYPE_COUNT; i++) {
+        if (!gl_last_lookfar[i].valid) continue;
+        int x = gl_last_lookfar[i].x, y = gl_last_lookfar[i].y;
+        if (x < 0 || x >= GRID_WIDTH || y < 0 || y >= GRID_HEIGHT) {
+            gl_last_lookfar[i].valid = false;
+            continue;
+        }
+        if (gl_tile_matrix[x][y].type != (TileType)i) {
+            gl_last_lookfar[i].valid = false;
+        }
+    }
+    pthread_mutex_unlock(&gl_tiles_lock);
+}
+
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 void gl_bot_grid_pos(int *gx, int *gy) {
     int x = (int)gl_bot_target_x / TILE_SIZE;
@@ -336,6 +513,13 @@ static void initialize_default_tiles(void) {
     pthread_mutex_unlock(&gl_tiles_lock);
 }
 
+static int gl_spawn_gx_cache = 100, gl_spawn_gy_cache = 137;
+
+void gl_bot_spawn_grid_pos(int *gx, int *gy) {
+    if (gx) *gx = gl_spawn_gx_cache;
+    if (gy) *gy = gl_spawn_gy_cache;
+}
+
 void gl_initialize_world(bool use_fog, int rocks_target) {
     gl_enable_fog_of_war = use_fog;
     gl_world_rocks_target = rocks_target > 0 ? rocks_target : 1;
@@ -347,6 +531,8 @@ void gl_initialize_world(bool use_fog, int rocks_target) {
     gl_bot_last_speech[0] = '\0';
     gl_bot_x = 400.0f; gl_bot_y = 550.0f;
     gl_bot_target_x = 400.0f; gl_bot_target_y = 550.0f;
+    gl_spawn_gx_cache = (int)gl_bot_x / TILE_SIZE;
+    gl_spawn_gy_cache = (int)gl_bot_y / TILE_SIZE;
 
     pthread_mutex_lock(&gl_built_lock);
     gl_bot_built_count = 0;
@@ -356,6 +542,138 @@ void gl_initialize_world(bool use_fog, int rocks_target) {
     build_scenery_procedural(gl_world_rocks_target);
     if (gl_initial_town_size > 0)
         generate_initial_town(gl_initial_town_size);
+
+    known_features_reset();
+}
+
+/* ── Neighbours line + known-features summary ───────────────────────────── */
+/* Order matches the compass order N, NE, E, SE, S, SW, W, NW — same as the
+ * Direction enum but without DIR_NONE. */
+void gl_build_neighbours_line(char *out, size_t cap) {
+    if (cap == 0) return;
+    int gx, gy;
+    gl_bot_grid_pos(&gx, &gy);
+    const Direction order[8] = {
+        DIR_N, DIR_NE, DIR_E, DIR_SE, DIR_S, DIR_SW, DIR_W, DIR_NW
+    };
+    const char *names[8] = {0};
+    TileType    types[8] = {0};
+    pthread_mutex_lock(&gl_tiles_lock);
+    /* The robot is physically present on the centre tile and can see its
+     * eight touching neighbours directly, so reveal their fog as we read
+     * them. LookFar stays the only tool that reveals beyond this ring. */
+    gl_tile_matrix[gx][gy].fog = false;
+    for (int i = 0; i < 8; i++) {
+        int dx = 0, dy = 0;
+        direction_unit(order[i], &dx, &dy);
+        int x = gx + dx, y = gy + dy;
+        if (x < 0 || x >= GRID_WIDTH || y < 0 || y >= GRID_HEIGHT) {
+            names[i] = "off_map";
+            types[i] = TILE_TYPE_COUNT; /* sentinel: not a real type */
+        } else {
+            gl_tile_matrix[x][y].fog = false;
+            types[i] = gl_tile_matrix[x][y].type;
+            names[i] = tile_type_name(types[i]);
+        }
+    }
+    const char *cur = tile_type_name(gl_tile_matrix[gx][gy].type);
+
+    /* Feed the 8-neighbour ring into gl_last_lookfar so MoveTo(target=...)
+     * works without a stale-cache miss. Two passes: orthogonal first, then
+     * diagonal. Orth wins ties so the resulting MoveTo lands on an
+     * |dx|+|dy|=1 cell (i.e. a valid Create-neighbour). Stale entries for
+     * tile types NOT seen in the ring are left untouched — the old LookFar
+     * memory for distant features still stands. */
+    const int orth_idx[4] = { 0, 2, 4, 6 };   /* N, E, S, W   */
+    const int diag_idx[4] = { 1, 3, 5, 7 };   /* NE, SE, SW, NW */
+    for (int pass = 0; pass < 2; pass++) {
+        const int *idxs = pass == 0 ? orth_idx : diag_idx;
+        for (int k = 0; k < 4; k++) {
+            int i = idxs[k];
+            if (types[i] >= TILE_TYPE_COUNT) continue;
+            int dx = 0, dy = 0;
+            direction_unit(order[i], &dx, &dy);
+            int x = gx + dx, y = gy + dy;
+            TileType t = types[i];
+            /* Pass 1 (diagonals): do not clobber an orthogonal adjacent
+             * entry just written by pass 0. */
+            if (pass == 1 && gl_last_lookfar[t].valid &&
+                gl_last_lookfar[t].dist == DIST_ADJACENT &&
+                gl_last_lookfar[t].game_hour == gl_bot_hour_count) {
+                continue;
+            }
+            gl_last_lookfar[t] = (KnownFeature){
+                .valid = true, .x = x, .y = y,
+                .dir = order[i], .dist = DIST_ADJACENT,
+                .game_hour = gl_bot_hour_count,
+            };
+        }
+    }
+    pthread_mutex_unlock(&gl_tiles_lock);
+
+    snprintf(out, cap,
+        "Neighbours: N=%s, NE=%s, E=%s, SE=%s, S=%s, SW=%s, W=%s, NW=%s. "
+        "Current=%s.",
+        names[0], names[1], names[2], names[3],
+        names[4], names[5], names[6], names[7], cur);
+}
+
+void gl_build_known_features_summary(char *out, size_t cap) {
+    if (cap == 0) return;
+    out[0] = '\0';
+    known_features_revalidate();
+
+    /* Direction/distance of every cached feature is only meaningful
+     * relative to where the bot *is now*, not where it was when the
+     * feature was seen. Recompute both from the stored absolute (x,y)
+     * against the current bot position. Drop entries beyond the LookFar
+     * horizon so stale long-range memory stops steering MoveTo. */
+    int bgx, bgy;
+    gl_bot_grid_pos(&bgx, &bgy);
+    int horizon = gl_bot_lookfar_distance;
+    if (horizon < 1) horizon = 20;
+
+    size_t w = 0;
+    bool any = false;
+    for (int i = 0; i < TILE_TYPE_COUNT; i++) {
+        if (!gl_last_lookfar[i].valid) continue;
+        int fx = gl_last_lookfar[i].x;
+        int fy = gl_last_lookfar[i].y;
+        int ddx = fx - bgx, ddy = fy - bgy;
+        int adx = ddx < 0 ? -ddx : ddx;
+        int ady = ddy < 0 ? -ddy : ddy;
+        int cheb = adx > ady ? adx : ady;
+        if (cheb == 0) {
+            /* Feature is under the bot; Neighbours + Current already cover it. */
+            continue;
+        }
+        if (cheb > horizon) {
+            /* Out-of-range: drop it so it stops showing up as a mirage. */
+            gl_last_lookfar[i].valid = false;
+            continue;
+        }
+        Direction  dir  = direction_from_delta(ddx, ddy);
+        DistBucket dist = dist_bucket_from_tiles(cheb);
+        /* Refresh the cache so MoveTo(target=...) sees the same direction
+         * the LLM just read in the summary. */
+        gl_last_lookfar[i].dir  = dir;
+        gl_last_lookfar[i].dist = dist;
+
+        /* Capitalise the first letter of the tile name for prose. */
+        const char *name = tile_type_name((TileType)i);
+        char Name[32];
+        snprintf(Name, sizeof(Name), "%s", name);
+        if (Name[0] >= 'a' && Name[0] <= 'z') Name[0] = (char)(Name[0] - 'a' + 'A');
+        int n = snprintf(out + w, cap - w,
+            "%s%s %s (%s).",
+            any ? " " : "",
+            Name,
+            direction_name(dir),
+            dist_bucket_name(dist));
+        if (n < 0 || (size_t)n >= cap - w) { out[cap-1] = '\0'; return; }
+        w += (size_t)n;
+        any = true;
+    }
 }
 
 /* ── Power network check (BFS) ───────────────────────────────────────────── */
@@ -524,12 +842,9 @@ ToolResult gl_move_to(int target_x, int target_y) {
      * it indefinitely (observed: 17 consecutive self-moves on the habitat).
      * Returning ok:false here forces the LLM to pick a different tool. */
     if (start_gx == target_x && start_gy == target_y) {
-        char buf[128];
-        snprintf(buf, sizeof(buf),
-                 "Already at (%d,%d). MoveTo target must differ from current "
-                 "position; pick a different tool or a different target.",
-                 start_gx, start_gy);
-        tool_result_err(&res, buf);
+        tool_result_err(&res,
+            "MoveTo with zero displacement. Pick a different direction or "
+            "a different tool.");
         msg_log("  [MoveTo] rejected no-op: already at (%d,%d)",
                 start_gx, start_gy);
         return res;
@@ -575,14 +890,87 @@ ToolResult gl_move_to(int target_x, int target_y) {
             start_gx, start_gy, target_x, target_y, hours_taken, gx, gy, landed);
 
     tool_result_ok(&res);
+    /* No raw coordinates in the LLM-facing payload: the bot now reasons
+     * purely in compass terms. Hours, landed tile type, and energy are
+     * still useful. */
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
-        "{\"ok\":true,\"target_tile_x\":%d,\"target_tile_y\":%d,"
-        "\"hours_taken\":%d,\"move_limit\":%d,"
-        "\"tile_x\":%d,\"tile_y\":%d,\"tile_type\":\"%s\","
+        "{\"ok\":true,\"hours_taken\":%d,\"move_limit\":%d,"
+        "\"landed_tile\":\"%s\","
         "\"energy\":%d,\"hours_to_solar_flare\":%d}",
-        target_x, target_y, hours_taken, MOVE_MAX_TILES,
-        gx, gy, landed, gl_bot_energy, gl_hours_to_solar_flare);
+        hours_taken, MOVE_MAX_TILES,
+        landed, gl_bot_energy, gl_hours_to_solar_flare);
     return res;
+}
+
+/* MoveTo(direction, distance_bucket): walk up to the bucket's step count
+ * along the 8-way compass vector. Clamps to world bounds; gl_move_to
+ * handles the actual tile-by-tile traversal. */
+ToolResult gl_move_direction_bucket(Direction dir, DistBucket dist) {
+    ToolResult res = {0};
+    if (dir == DIR_NONE) {
+        tool_result_err(&res,
+            "MoveTo needs a direction (north, north-east, east, south-east, "
+            "south, south-west, west, or north-west).");
+        return res;
+    }
+    if (dist == DIST_NONE) {
+        tool_result_err(&res,
+            "MoveTo needs either 'distance' (adjacent|close|medium|far) "
+            "or 'target' (a tile type seen in the last LookFar).");
+        return res;
+    }
+    int ux = 0, uy = 0;
+    direction_unit(dir, &ux, &uy);
+    int steps = dist_bucket_walk_tiles(dist);
+    int start_gx, start_gy;
+    gl_bot_grid_pos(&start_gx, &start_gy);
+    int tx = start_gx + ux * steps;
+    int ty = start_gy + uy * steps;
+    return gl_move_to(tx, ty);
+}
+
+/* MoveTo(direction, target_type): requires a prior LookFar to have cached
+ * the feature. Also requires the cached direction to be in the same
+ * octant as the requested one, so bad asks get a clear, targeted error
+ * instead of silently redirecting the bot somewhere wrong. */
+ToolResult gl_move_direction_target(Direction dir, TileType target_type) {
+    ToolResult res = {0};
+    if (dir == DIR_NONE) {
+        tool_result_err(&res,
+            "MoveTo needs a direction (north, north-east, east, south-east, "
+            "south, south-west, west, or north-west).");
+        return res;
+    }
+    if (target_type < 0 || target_type >= TILE_TYPE_COUNT) {
+        tool_result_err(&res, "Unknown target tile type.");
+        return res;
+    }
+    known_features_revalidate();
+    if (!gl_last_lookfar[target_type].valid) {
+        char err[256];
+        snprintf(err, sizeof(err),
+            "No %s known yet. Call LookFar before targeting it.",
+            tile_type_name(target_type));
+        tool_result_err(&res, err);
+        return res;
+    }
+    if (gl_last_lookfar[target_type].dir != dir) {
+        char err[256];
+        snprintf(err, sizeof(err),
+            "The known %s is %s (%s), not %s. Use MoveTo(direction=%s, "
+            "target=%s) or call LookFar again.",
+            tile_type_name(target_type),
+            direction_name(gl_last_lookfar[target_type].dir),
+            dist_bucket_name(gl_last_lookfar[target_type].dist),
+            direction_name(dir),
+            direction_name(gl_last_lookfar[target_type].dir),
+            tile_type_name(target_type));
+        tool_result_err(&res, err);
+        return res;
+    }
+    int fx = gl_last_lookfar[target_type].x;
+    int fy = gl_last_lookfar[target_type].y;
+    return gl_move_to(fx, fy);
 }
 
 ToolResult gl_look_close(void) {
@@ -684,28 +1072,68 @@ ToolResult gl_look_far(void) {
         }
     }
 
-    char features[1400] = "[";
+    /* Invalidate every type, then repopulate only what we saw. Any type
+     * not represented in `best` this turn was either not in range or
+     * fully occluded, so stale cache entries would mislead the LLM. */
+    known_features_reset();
+
+    /* Keep these tight enough that features + summary + JSON envelope fits
+     * inside TOOL_RESULT_MAX_LEN (2048). */
+    char features[900] = "[";
     int flen = 1;
+    char summary[420] = "";
+    size_t slen = 0;
+    bool any_feature = false;
     for (int i = 0; i < TILE_TYPE_COUNT; i++) {
         if (best[i].dist > 1e8f) continue;
+        int ddx = best[i].x - gx, ddy = best[i].y - gy;
+        Direction  dir  = direction_from_delta(ddx, ddy);
+        int        tiles = (int)(best[i].dist + 0.5f);
+        if (tiles < 1) tiles = 1;
+        DistBucket dist = dist_bucket_from_tiles(tiles);
+        const char *type_name = tile_type_name(best[i].type);
+
+        gl_last_lookfar[i] = (KnownFeature){
+            .valid = true,
+            .x = best[i].x, .y = best[i].y,
+            .dir = dir, .dist = dist,
+            .game_hour = gl_bot_hour_count,
+        };
+
         flen += snprintf(features + flen, sizeof(features) - flen,
-            "%s{\"type\":\"%s\",\"x\":%d,\"y\":%d,\"distance\":%.1f}",
-            flen > 1 ? "," : "", tile_type_name(best[i].type),
-            best[i].x, best[i].y, best[i].dist);
+            "%s{\"type\":\"%s\",\"direction\":\"%s\",\"distance\":\"%s\"}",
+            flen > 1 ? "," : "",
+            type_name,
+            direction_name(dir),
+            dist_bucket_name(dist));
+
+        char Name[32];
+        snprintf(Name, sizeof(Name), "%s", type_name);
+        if (Name[0] >= 'a' && Name[0] <= 'z') Name[0] = (char)(Name[0] - 'a' + 'A');
+        int n = snprintf(summary + slen, sizeof(summary) - slen,
+            "%s%s %s (%s).",
+            any_feature ? " " : "",
+            Name, direction_name(dir), dist_bucket_name(dist));
+        if (n > 0 && (size_t)n < sizeof(summary) - slen) slen += (size_t)n;
+        any_feature = true;
     }
     strncat(features, "]", sizeof(features) - strlen(features) - 1);
+    if (!any_feature) snprintf(summary, sizeof(summary), "Nothing notable in view.");
 
     /* Big cyan scan ring, radius = gl_bot_lookfar_distance tiles. */
     particles_spawn_scan_pulse(gl_bot_x + TILE_SIZE / 2.0f,
                                gl_bot_y + TILE_SIZE / 2.0f,
                                (float)(radius * TILE_SIZE));
 
-    msg_log("  [LookFar] radius %d from (%d,%d)", radius, gx, gy);
+    msg_log("  [LookFar] %s", summary);
     tool_result_ok(&res);
+    /* Escape backslashes/quotes in the summary would be nice, but the
+     * generator only uses ASCII letters, digits, spaces, dots and
+     * parentheses, so direct interpolation is safe. */
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
-        "{\"ok\":true,\"bot_tile_x\":%d,\"bot_tile_y\":%d,"
-        "\"features\":%s,\"energy\":%d,\"hours_to_solar_flare\":%d}",
-        gx, gy, features, gl_bot_energy, gl_hours_to_solar_flare);
+        "{\"ok\":true,\"features\":%s,\"summary\":\"%s\","
+        "\"energy\":%d,\"hours_to_solar_flare\":%d}",
+        features, summary, gl_bot_energy, gl_hours_to_solar_flare);
     return res;
 }
 
@@ -725,8 +1153,10 @@ ToolResult gl_dig(void) {
 
     if (t != TILE_ROCKS) {
         char err[256];
-        snprintf(err, sizeof(err), "No rocks at (%d,%d). Current: %s.", gx, gy, tile_type_name(t));
-        msg_log("  [Dig] %s", err);
+        snprintf(err, sizeof(err),
+            "No rocks on the current tile (it is %s). Dig requires the bot "
+            "to stand on a 'rocks' tile.", tile_type_name(t));
+        msg_log("  [Dig] rejected at (%d,%d): current=%s", gx, gy, tile_type_name(t));
         tool_result_err(&res, err);
         return res;
     }
@@ -738,8 +1168,9 @@ ToolResult gl_dig(void) {
     tool_result_ok(&res);
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
         "{\"ok\":true,\"rock_obtained\":true,\"rocks_in_inventory\":%d,"
-        "\"tile_x\":%d,\"tile_y\":%d,\"energy\":%d,\"hours_to_solar_flare\":%d}",
-        gl_bot_inventory_rocks, gx, gy, gl_bot_energy, gl_hours_to_solar_flare);
+        "\"current_tile\":\"gravel\","
+        "\"energy\":%d,\"hours_to_solar_flare\":%d}",
+        gl_bot_inventory_rocks, gl_bot_energy, gl_hours_to_solar_flare);
     return res;
 }
 
@@ -767,13 +1198,17 @@ ToolResult gl_create(const char *tile_type_str) {
 
     if (tile_is_buildable(cur)) {
         char err[256];
-        snprintf(err, sizeof(err), "Tile (%d,%d) already has %s.", gx, gy, tile_type_name(cur));
+        snprintf(err, sizeof(err),
+            "Current tile already has %s; move to an empty buildable tile first.",
+            tile_type_name(cur));
         tool_result_err(&res, err);
         return res;
     }
     if (cur == TILE_WATER || cur == TILE_BROKEN_HABITAT) {
         char err[256];
-        snprintf(err, sizeof(err), "Cannot build on %s at (%d,%d).", tile_type_name(cur), gx, gy);
+        snprintf(err, sizeof(err),
+            "Cannot build on %s; move to gravel, sand, or rocks first.",
+            tile_type_name(cur));
         tool_result_err(&res, err);
         return res;
     }
@@ -803,22 +1238,23 @@ ToolResult gl_create(const char *tile_type_str) {
             tile_type_name(want), gx, gy, gl_bot_inventory_rocks);
     tool_result_ok(&res);
     /* Warn loudly if the bot just consumed a rocks tile: without this, small
-     * models keep referencing the old LookFar result that called this
-     * coordinate "rocks" and try to come back here to Dig. */
+     * models keep referencing the old LookFar 'rocks' entry and try to come
+     * back here to Dig. The cache is already invalidated by
+     * known_features_revalidate, but telling the LLM directly is cheaper
+     * than making it re-read STATUS. */
     char note[192] = "";
     if (cur == TILE_ROCKS) {
         snprintf(note, sizeof(note),
-            ",\"note\":\"This tile was 'rocks' and is now '%s'. It cannot be"
-            " dug anymore. Any older LookFar data calling (%d,%d) 'rocks' is"
-            " stale.\"",
-            tile_type_name(want), gx, gy);
+            ",\"note\":\"This tile was 'rocks' and is now '%s'. Any older "
+            "LookFar entry for 'rocks' may be stale; call LookFar to refresh.\"",
+            tile_type_name(want));
     }
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
-        "{\"ok\":true,\"tile_created\":\"%s\",\"tile_x\":%d,\"tile_y\":%d,"
+        "{\"ok\":true,\"tile_created\":\"%s\","
         "\"previous_tile_type\":\"%s\","
         "\"rocks_consumed\":%d,\"rocks_in_inventory\":%d,"
         "\"energy\":%d,\"hours_to_solar_flare\":%d%s}",
-        tile_type_name(want), gx, gy, tile_type_name(cur),
+        tile_type_name(want), tile_type_name(cur),
         cost, gl_bot_inventory_rocks,
         gl_bot_energy, gl_hours_to_solar_flare, note);
     return res;
@@ -831,25 +1267,99 @@ ToolResult gl_list_built_tiles(void) {
         return res;
     }
     consume_energy(1);
+
+    int gx, gy;
+    gl_bot_grid_pos(&gx, &gy);
+
+    int counts[TILE_TYPE_COUNT] = {0};
     char built_arr[1400] = "[";
     int blen = 1;
     pthread_mutex_lock(&gl_built_lock);
-    for (int i = 0; i < gl_bot_built_count && blen < 1300; i++) {
-        blen += snprintf(built_arr + blen, sizeof(built_arr) - blen,
-            "%s{\"x\":%d,\"y\":%d,\"type\":\"%s\",\"game_hour\":%d}",
-            blen > 1 ? "," : "",
-            gl_bot_built[i].x, gl_bot_built[i].y,
-            tile_type_name(gl_bot_built[i].type), gl_bot_built[i].game_hour);
-    }
     int n = gl_bot_built_count;
+    for (int i = 0; i < n && blen < 1300; i++) {
+        int ddx = gl_bot_built[i].x - gx;
+        int ddy = gl_bot_built[i].y - gy;
+        Direction  dir = direction_from_delta(ddx, ddy);
+        int        tiles = (int)(sqrtf((float)(ddx*ddx + ddy*ddy)) + 0.5f);
+        DistBucket dist = (ddx == 0 && ddy == 0) ? DIST_CLOSE
+                                                 : dist_bucket_from_tiles(tiles);
+        counts[gl_bot_built[i].type]++;
+        blen += snprintf(built_arr + blen, sizeof(built_arr) - blen,
+            "%s{\"type\":\"%s\",\"direction\":\"%s\",\"distance\":\"%s\","
+            "\"game_hour\":%d}",
+            blen > 1 ? "," : "",
+            tile_type_name(gl_bot_built[i].type),
+            (dir == DIR_NONE) ? "here" : direction_name(dir),
+            dist_bucket_name(dist),
+            gl_bot_built[i].game_hour);
+    }
     pthread_mutex_unlock(&gl_built_lock);
     strncat(built_arr, "]", sizeof(built_arr) - strlen(built_arr) - 1);
 
-    msg_log("  [ListBuiltTiles] %d recorded builds.", n);
+    char counts_str[192];
+    snprintf(counts_str, sizeof(counts_str),
+        "{\"habitat\":%d,\"battery\":%d,\"solar_panel\":%d}",
+        counts[TILE_HABITAT], counts[TILE_BATTERY], counts[TILE_SOLAR_PANEL]);
+
+    char summary[192];
+    snprintf(summary, sizeof(summary),
+        "Built so far: %d habitat, %d battery, %d solar_panel.",
+        counts[TILE_HABITAT], counts[TILE_BATTERY], counts[TILE_SOLAR_PANEL]);
+
+    msg_log("  [ListBuiltTiles] %s", summary);
     tool_result_ok(&res);
     snprintf(res.json, TOOL_RESULT_MAX_LEN,
-        "{\"ok\":true,\"built\":%s,\"count\":%d,\"energy\":%d,\"hours_to_solar_flare\":%d}",
-        built_arr, n, gl_bot_energy, gl_hours_to_solar_flare);
+        "{\"ok\":true,\"built\":%s,\"count\":%d,\"counts\":%s,"
+        "\"summary\":\"%s\","
+        "\"energy\":%d,\"hours_to_solar_flare\":%d}",
+        built_arr, n, counts_str, summary,
+        gl_bot_energy, gl_hours_to_solar_flare);
+    return res;
+}
+
+/* Wait: stay on the current tile for one hour. Follows the same flare-
+ * advance + 1-energy-cost contract as every other tool so the bookkeeping
+ * matches. The habitat +25 recharge for the *starting* tile was already
+ * applied at the top of agent_loop, so calling Wait while standing on a
+ * powered habitat nets +23 energy per hour. */
+ToolResult gl_wait(void) {
+    ToolResult res = {0};
+    if (!gl_advance_solar_flare_hour(-1)) {
+        tool_result_err(&res, "Destroyed by solar flare.");
+        return res;
+    }
+    consume_energy(1);
+
+    int gx, gy;
+    gl_bot_grid_pos(&gx, &gy);
+    pthread_mutex_lock(&gl_tiles_lock);
+    TileType t = gl_tile_matrix[gx][gy].type;
+    pthread_mutex_unlock(&gl_tiles_lock);
+    bool on_powered_habitat =
+        (t == TILE_HABITAT) && habitat_on_solar_network(gx, gy);
+
+    /* Hold the charging sprite for the whole hour while recharging, instead
+     * of the 0.8s flash apply_habitat_network_charge sets at hour start.
+     * The next hour's apply_habitat_network_charge will reset the timer to
+     * the short flash value, so this doesn't stall the agent loop. */
+    if (on_powered_habitat) {
+        gl_bot_state = BOT_CHARGING;
+        gl_charging_animation_until =
+            (double)clock() / CLOCKS_PER_SEC + 10.0;
+    } else {
+        gl_bot_state = BOT_WAITING;
+    }
+
+    msg_log("  [Wait] %s", on_powered_habitat
+        ? "recharging on powered habitat."
+        : "idle (no recharge; not on a powered habitat).");
+
+    tool_result_ok(&res);
+    snprintf(res.json, TOOL_RESULT_MAX_LEN,
+        "{\"ok\":true,\"on_powered_habitat\":%s,"
+        "\"energy\":%d,\"hours_to_solar_flare\":%d}",
+        on_powered_habitat ? "true" : "false",
+        gl_bot_energy, gl_hours_to_solar_flare);
     return res;
 }
 
@@ -858,6 +1368,119 @@ void gl_print_hour_status(void) {
     gl_bot_grid_pos(&gx, &gy);
     msg_log("  === STATUS === Energy:%d Pos:(%d,%d) Flare in:%d Rocks:%d",
             gl_bot_energy, gx, gy, gl_hours_to_solar_flare, gl_bot_inventory_rocks);
+}
+
+/* ── Post-mortem summary ────────────────────────────────────────────────── */
+/* Flood-fills connected {habitat, battery, solar_panel} groups (orthogonal
+ * edges only) starting from each un-visited structure cell, and counts how
+ * many groups contain at least one habitat AND one battery AND one
+ * solar_panel. Operates on a local visited[] grid so it is safe to call
+ * while the game keeps rendering. */
+static int count_powered_clusters(const unsigned char *structure) {
+    const int W = GRID_WIDTH, H = GRID_HEIGHT;
+    unsigned char *visited = (unsigned char *)calloc((size_t)W * H, 1);
+    if (!visited) return 0;
+    int *stack = (int *)malloc(sizeof(int) * (size_t)W * H);
+    if (!stack) { free(visited); return 0; }
+    int powered = 0;
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int idx = y * W + x;
+            if (!structure[idx] || visited[idx]) continue;
+            int top = 0;
+            stack[top++] = idx;
+            visited[idx] = 1;
+            int has_hab = 0, has_bat = 0, has_sol = 0;
+            while (top > 0) {
+                int p = stack[--top];
+                int px = p % W, py = p / W;
+                if (structure[p] == (unsigned char)TILE_HABITAT)     has_hab = 1;
+                else if (structure[p] == (unsigned char)TILE_BATTERY) has_bat = 1;
+                else if (structure[p] == (unsigned char)TILE_SOLAR_PANEL) has_sol = 1;
+                const int dx[4] = {1, -1, 0, 0};
+                const int dy[4] = {0, 0, 1, -1};
+                for (int k = 0; k < 4; k++) {
+                    int nx = px + dx[k], ny = py + dy[k];
+                    if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+                    int ni = ny * W + nx;
+                    if (!structure[ni] || visited[ni]) continue;
+                    visited[ni] = 1;
+                    stack[top++] = ni;
+                }
+            }
+            if (has_hab && has_bat && has_sol) powered++;
+        }
+    }
+    free(stack);
+    free(visited);
+    return powered;
+}
+
+void gl_compute_postmortem(PostmortemStats *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->hours_survived   = gl_bot_hour_count;
+    out->final_energy     = gl_bot_energy;
+    out->final_rocks      = gl_bot_inventory_rocks;
+    out->destroyed_by_flare = (gl_bot_state == BOT_DESTROYED);
+    gl_bot_spawn_grid_pos(&out->spawn_gx, &out->spawn_gy);
+    gl_bot_grid_pos(&out->final_gx, &out->final_gy);
+    int dx = out->final_gx - out->spawn_gx;
+    int dy = out->final_gy - out->spawn_gy;
+    int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    out->travel_chebyshev = adx > ady ? adx : ady;
+    out->tiles_total = GRID_WIDTH * GRID_HEIGHT;
+
+    const int W = GRID_WIDTH, H = GRID_HEIGHT;
+    unsigned char *structure = (unsigned char *)calloc((size_t)W * H, 1);
+    out->explore_min_gx = W;
+    out->explore_min_gy = H;
+    out->explore_max_gx = -1;
+    out->explore_max_gy = -1;
+
+    pthread_mutex_lock(&gl_tiles_lock);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            Tile *t = &gl_tile_matrix[x][y];
+            if (!t->fog) {
+                out->tiles_discovered++;
+                if (x < out->explore_min_gx) out->explore_min_gx = x;
+                if (x > out->explore_max_gx) out->explore_max_gx = x;
+                if (y < out->explore_min_gy) out->explore_min_gy = y;
+                if (y > out->explore_max_gy) out->explore_max_gy = y;
+            }
+            if (structure) {
+                if (t->type == TILE_HABITAT || t->type == TILE_BATTERY ||
+                    t->type == TILE_SOLAR_PANEL) {
+                    structure[y * W + x] = (unsigned char)t->type;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&gl_tiles_lock);
+
+    if (out->explore_max_gx < 0) {
+        /* No fog cleared at all — bot was destroyed before any observation. */
+        out->explore_min_gx = out->explore_max_gx = out->spawn_gx;
+        out->explore_min_gy = out->explore_max_gy = out->spawn_gy;
+    }
+
+    pthread_mutex_lock(&gl_built_lock);
+    for (int i = 0; i < gl_bot_built_count; i++) {
+        switch (gl_bot_built[i].type) {
+            case TILE_HABITAT:     out->built_habitats++;     break;
+            case TILE_BATTERY:     out->built_batteries++;    break;
+            case TILE_SOLAR_PANEL: out->built_solar_panels++; break;
+            default: break;
+        }
+    }
+    out->built_total = gl_bot_built_count;
+    pthread_mutex_unlock(&gl_built_lock);
+
+    if (structure) {
+        out->powered_clusters = count_powered_clusters(structure);
+        free(structure);
+    }
 }
 
 /* ── Frame update ────────────────────────────────────────────────────────── */

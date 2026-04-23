@@ -39,6 +39,7 @@ typedef struct {
         char tool_dig[256];
         char tool_create[1024];
         char tool_list_built_tiles[256];
+        char tool_wait[512];
     } prompts;
 } BotsConfig;
 

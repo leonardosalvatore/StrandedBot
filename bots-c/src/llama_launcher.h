@@ -8,6 +8,14 @@
 void llama_launcher_set_port(int port);
 int  llama_launcher_get_port(void);
 
+/* When enabled, the child (start-llama-server.sh + llama-server) inherits
+ * the parent's stdout/stderr so every line shows up in the same terminal.
+ * When disabled (the default), both streams are redirected to /dev/null
+ * in the child before exec, so the parent's output stays clean. Must be
+ * called before llama_launcher_start() to take effect. */
+void llama_launcher_set_log_enabled(bool enabled);
+bool llama_launcher_get_log_enabled(void);
+
 /* Quick TCP connect() probe on 127.0.0.1:<port>. Returns true if something
  * is already listening (in which case the caller should skip the spawn). */
 bool llama_launcher_port_open(void);

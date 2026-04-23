@@ -48,11 +48,17 @@ static pid_t g_child_pid       = 0;
 static bool  g_atexit_registered = false;
 static bool  g_signals_installed  = false;
 static int   g_port              = LLAMA_PORT_DEFAULT;
+/* Silent by default: llama-server is noisy, so we mute it unless the
+ * operator explicitly passes --enable-llama-log. */
+static bool  g_log_enabled       = false;
 
 void llama_launcher_set_port(int port) {
     if (port > 0 && port < 65536) g_port = port;
 }
 int llama_launcher_get_port(void) { return g_port; }
+
+void llama_launcher_set_log_enabled(bool enabled) { g_log_enabled = enabled; }
+bool llama_launcher_get_log_enabled(void) { return g_log_enabled; }
 
 /* ── HTTP /health probe ───────────────────────────────────────────────────── */
 /* TCP-listening is not enough: llama-server binds the port ~6 s after spawn
@@ -282,7 +288,8 @@ bool llama_launcher_start(const char *script_path) {
         return true;
     }
 
-    TraceLog(LOG_INFO, "LLAMA: spawning %s -p %d", script_path, g_port);
+    TraceLog(LOG_INFO, "LLAMA: spawning %s -p %d (logs: %s)",
+             script_path, g_port, g_log_enabled ? "enabled" : "muted");
 
     /* Serialise the port in the parent; argv copies below are owned by the
      * child's own address space after exec, so it's safe to use stack-local
@@ -301,14 +308,28 @@ bool llama_launcher_start(const char *script_path) {
          * our signal handler to SIGTERM it explicitly and wait). */
         setpgid(0, 0);
 
-        /* Child shares the parent's stdout/stderr, so llama-server's logs
-         * appear in the same terminal. No pipe machinery needed. */
+        /* By default llama-server is muted: its stdout/stderr are redirected
+         * to /dev/null before exec so the parent's terminal stays readable.
+         * `--enable-llama-log` leaves both streams inherited from the
+         * parent, which is what the old behaviour was. */
+        if (!g_log_enabled) {
+            int dn = open("/dev/null", O_WRONLY | O_CLOEXEC);
+            if (dn >= 0) {
+                dup2(dn, STDOUT_FILENO);
+                dup2(dn, STDERR_FILENO);
+                if (dn != STDOUT_FILENO && dn != STDERR_FILENO) close(dn);
+            }
+        }
+
         char *argv[4];
         argv[0] = (char *)script_path;
         argv[1] = "-p";
         argv[2] = port_str;
         argv[3] = NULL;
         execvp(script_path, argv);
+        /* If we muted stderr above, this write goes to /dev/null, but the
+         * _exit(127) will still bubble up via waitpid() so the parent sees
+         * the launch failed. */
         fprintf(stderr, "LLAMA: execvp(%s) failed: %s\n",
                 script_path, strerror(errno));
         _exit(127);
