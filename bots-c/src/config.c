@@ -88,8 +88,15 @@ static const char *FALLBACK_SYSTEM_PROMPT =
     "- Dig and Create change the current tile. Old Known-features entries\n"
     "  that pointed to it are dropped automatically; trust the newest\n"
     "  tool results and the Neighbours line over older LookFar memory.\n"
-    "- If energy drops below 200, move onto a habitat tile and stay\n"
-    "  there until recharged.";
+    "- Recharge on a POWERED habitat (habitat whose N/E/S/W neighbours\n"
+    "  include both a battery and a solar_panel) by calling Wait. The\n"
+    "  habitat grants +25 energy/hour, Wait costs 1, so Wait nets\n"
+    "  +24/hour. DO NOT MoveTo(adjacent) to 'stay' \xe2\x80\x94 MoveTo leaves the\n"
+    "  tile. To recharge to a target E, call Wait repeatedly until\n"
+    "  energy >= E.\n"
+    "- If energy<200 or the user asks you to recharge to a specific\n"
+    "  value, MoveTo a powered habitat and Wait until the target is\n"
+    "  reached.";
 
 static const char *FALLBACK_TOOL_MOVE_TO =
     "Walk the bot in a compass direction. Supply 'direction' plus "
@@ -118,6 +125,13 @@ static const char *FALLBACK_TOOL_CREATE =
 static const char *FALLBACK_TOOL_LIST_BUILT =
     "Returns every structure the bot placed via Create, each tagged with "
     "direction and distance bucket relative to the bot now. Costs 1 energy.";
+
+static const char *FALLBACK_TOOL_WAIT =
+    "Stay on the current tile for one hour. No movement. Costs 1 energy. "
+    "On a POWERED habitat (habitat orthogonally adjacent to both a battery "
+    "and a solar_panel) the hour starts with +25 energy, so Wait nets "
+    "+24/hour of recharge. Use Wait \xe2\x80\x94 not MoveTo(adjacent) \xe2\x80\x94 "
+    "to recharge to a target energy, because MoveTo leaves the habitat.";
 
 /* ── File helpers ─────────────────────────────────────────────────────────── */
 
@@ -232,6 +246,9 @@ static void apply_fallback_defaults(BotsConfig *out) {
     set_str(out->prompts.tool_list_built_tiles,
             sizeof(out->prompts.tool_list_built_tiles),
             FALLBACK_TOOL_LIST_BUILT);
+    set_str(out->prompts.tool_wait,
+            sizeof(out->prompts.tool_wait),
+            FALLBACK_TOOL_WAIT);
 }
 
 /* ── JSON overlay ─────────────────────────────────────────────────────────── */
@@ -304,6 +321,9 @@ static bool overlay_json(BotsConfig *out, const char *json_text,
         copy_json_string(prompts, "tool_list_built_tiles",
                          out->prompts.tool_list_built_tiles,
                          sizeof(out->prompts.tool_list_built_tiles));
+        copy_json_string(prompts, "tool_wait",
+                         out->prompts.tool_wait,
+                         sizeof(out->prompts.tool_wait));
     }
 
     cJSON_Delete(root);
@@ -350,6 +370,7 @@ static cJSON *config_to_json(const BotsConfig *cfg) {
     cJSON_AddStringToObject(prompts, "tool_dig",              cfg->prompts.tool_dig);
     cJSON_AddStringToObject(prompts, "tool_create",           cfg->prompts.tool_create);
     cJSON_AddStringToObject(prompts, "tool_list_built_tiles", cfg->prompts.tool_list_built_tiles);
+    cJSON_AddStringToObject(prompts, "tool_wait",             cfg->prompts.tool_wait);
     cJSON_AddItemToObject(root, "prompts", prompts);
 
     return root;

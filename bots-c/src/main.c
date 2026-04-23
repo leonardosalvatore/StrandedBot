@@ -109,6 +109,30 @@ static void draw_log_panel(int x, int y, int w, int h) {
                            syslog_bg);
 }
 
+/* Top-right mirror panel: shows the most recent "[Bot] ..." line that was
+ * pushed into the SYSLOG ring. Single line, clipped to the panel width.
+ * Walks the full ring once per frame; cheap (<=1000 pointers). */
+static void draw_last_bot_panel(int x, int y, int w, int h) {
+    static const char *ring_view[MSG_LOG_MAX_LINES];
+    int n = msg_log_get(ring_view, MSG_LOG_MAX_LINES);
+    const char *latest = NULL;
+    for (int i = n - 1; i >= 0; i--) {
+        const char *s = ring_view[i];
+        if (!s) continue;
+        /* The bot's own lines are logged as "  [Bot] <content>". Accept
+         * both with and without the leading indent, for resilience. */
+        const char *hit = strstr(s, "[Bot] ");
+        if (hit) { latest = hit + strlen("[Bot] "); break; }
+    }
+    char buf[512];
+    if (latest && latest[0]) {
+        snprintf(buf, sizeof(buf), "> %s", latest);
+    } else {
+        snprintf(buf, sizeof(buf), "> (waiting for bot...)");
+    }
+    draw_hud_text_panel(x, y, w, h, "LAST BOT", buf, /*wrap=*/false);
+}
+
 /* ── Reply dialog ────────────────────────────────────────────────────────── */
 static bool show_reply_dialog = false;
 static char reply_text[4096] = "";
@@ -439,6 +463,17 @@ int main(int argc, char **argv) {
             int log_w = (int)(full_w * 0.70f);      /* 30% narrower */
             int side_w = 310;
             draw_stats_panel(pad, pad, side_w, top_h);
+            /* Top-right: one-line mirror of the latest [Bot] message.
+             * 3x the TELEMETRY width, much shorter in height. Clamped
+             * so it never overlaps the TELEMETRY panel. */
+            int bot_line_w = side_w * 3;
+            int bot_line_h = 56;
+            int max_bot_line_w = sw - (pad + side_w + 12) - pad;
+            if (bot_line_w > max_bot_line_w) bot_line_w = max_bot_line_w;
+            if (bot_line_w > 200) {
+                int bot_line_x = sw - pad - bot_line_w;
+                draw_last_bot_panel(bot_line_x, pad, bot_line_w, bot_line_h);
+            }
             draw_log_panel(pad, sh - bot_h - pad, log_w, bot_h);
 
             /* Bottom-right stack: compose box (always) + reply dialog

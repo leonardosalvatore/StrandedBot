@@ -164,6 +164,10 @@ ToolResult gl_look_far(void);
 ToolResult gl_dig(void);
 ToolResult gl_create(const char *tile_type_str);
 ToolResult gl_list_built_tiles(void);
+/* Do-nothing action. Consumes 1 energy like every other tool and advances
+ * the flare counter. Primary use: standing on a powered habitat to rack
+ * up the +25 energy/hour recharge without moving off the tile. */
+ToolResult gl_wait(void);
 
 /* Neighbours line: "Neighbours: N=gravel, NE=sand, ... . Current=gravel." */
 void gl_build_neighbours_line(char *out, size_t cap);

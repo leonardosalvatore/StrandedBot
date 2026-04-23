@@ -622,10 +622,43 @@ void gl_build_known_features_summary(char *out, size_t cap) {
     if (cap == 0) return;
     out[0] = '\0';
     known_features_revalidate();
+
+    /* Direction/distance of every cached feature is only meaningful
+     * relative to where the bot *is now*, not where it was when the
+     * feature was seen. Recompute both from the stored absolute (x,y)
+     * against the current bot position. Drop entries beyond the LookFar
+     * horizon so stale long-range memory stops steering MoveTo. */
+    int bgx, bgy;
+    gl_bot_grid_pos(&bgx, &bgy);
+    int horizon = gl_bot_lookfar_distance;
+    if (horizon < 1) horizon = 20;
+
     size_t w = 0;
     bool any = false;
     for (int i = 0; i < TILE_TYPE_COUNT; i++) {
         if (!gl_last_lookfar[i].valid) continue;
+        int fx = gl_last_lookfar[i].x;
+        int fy = gl_last_lookfar[i].y;
+        int ddx = fx - bgx, ddy = fy - bgy;
+        int adx = ddx < 0 ? -ddx : ddx;
+        int ady = ddy < 0 ? -ddy : ddy;
+        int cheb = adx > ady ? adx : ady;
+        if (cheb == 0) {
+            /* Feature is under the bot; Neighbours + Current already cover it. */
+            continue;
+        }
+        if (cheb > horizon) {
+            /* Out-of-range: drop it so it stops showing up as a mirage. */
+            gl_last_lookfar[i].valid = false;
+            continue;
+        }
+        Direction  dir  = direction_from_delta(ddx, ddy);
+        DistBucket dist = dist_bucket_from_tiles(cheb);
+        /* Refresh the cache so MoveTo(target=...) sees the same direction
+         * the LLM just read in the summary. */
+        gl_last_lookfar[i].dir  = dir;
+        gl_last_lookfar[i].dist = dist;
+
         /* Capitalise the first letter of the tile name for prose. */
         const char *name = tile_type_name((TileType)i);
         char Name[32];
@@ -635,8 +668,8 @@ void gl_build_known_features_summary(char *out, size_t cap) {
             "%s%s %s (%s).",
             any ? " " : "",
             Name,
-            direction_name(gl_last_lookfar[i].dir),
-            dist_bucket_name(gl_last_lookfar[i].dist));
+            direction_name(dir),
+            dist_bucket_name(dist));
         if (n < 0 || (size_t)n >= cap - w) { out[cap-1] = '\0'; return; }
         w += (size_t)n;
         any = true;
@@ -1280,6 +1313,52 @@ ToolResult gl_list_built_tiles(void) {
         "\"summary\":\"%s\","
         "\"energy\":%d,\"hours_to_solar_flare\":%d}",
         built_arr, n, counts_str, summary,
+        gl_bot_energy, gl_hours_to_solar_flare);
+    return res;
+}
+
+/* Wait: stay on the current tile for one hour. Follows the same flare-
+ * advance + 1-energy-cost contract as every other tool so the bookkeeping
+ * matches. The habitat +25 recharge for the *starting* tile was already
+ * applied at the top of agent_loop, so calling Wait while standing on a
+ * powered habitat nets +23 energy per hour. */
+ToolResult gl_wait(void) {
+    ToolResult res = {0};
+    if (!gl_advance_solar_flare_hour(-1)) {
+        tool_result_err(&res, "Destroyed by solar flare.");
+        return res;
+    }
+    consume_energy(1);
+
+    int gx, gy;
+    gl_bot_grid_pos(&gx, &gy);
+    pthread_mutex_lock(&gl_tiles_lock);
+    TileType t = gl_tile_matrix[gx][gy].type;
+    pthread_mutex_unlock(&gl_tiles_lock);
+    bool on_powered_habitat =
+        (t == TILE_HABITAT) && habitat_on_solar_network(gx, gy);
+
+    /* Hold the charging sprite for the whole hour while recharging, instead
+     * of the 0.8s flash apply_habitat_network_charge sets at hour start.
+     * The next hour's apply_habitat_network_charge will reset the timer to
+     * the short flash value, so this doesn't stall the agent loop. */
+    if (on_powered_habitat) {
+        gl_bot_state = BOT_CHARGING;
+        gl_charging_animation_until =
+            (double)clock() / CLOCKS_PER_SEC + 10.0;
+    } else {
+        gl_bot_state = BOT_WAITING;
+    }
+
+    msg_log("  [Wait] %s", on_powered_habitat
+        ? "recharging on powered habitat."
+        : "idle (no recharge; not on a powered habitat).");
+
+    tool_result_ok(&res);
+    snprintf(res.json, TOOL_RESULT_MAX_LEN,
+        "{\"ok\":true,\"on_powered_habitat\":%s,"
+        "\"energy\":%d,\"hours_to_solar_flare\":%d}",
+        on_powered_habitat ? "true" : "false",
         gl_bot_energy, gl_hours_to_solar_flare);
     return res;
 }

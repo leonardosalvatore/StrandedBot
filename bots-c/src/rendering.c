@@ -41,9 +41,16 @@ static Texture2D bot_sprite = {0};
 static bool      bot_sprite_loaded = false;
 #define BOT_SPRITE_SIZE 150
 
+/* Sprite grid (3 cols x 2 rows) in bots.png, 0-indexed (col, row):
+ *   (0,0) standing          -> WAITING / DESTROYED
+ *   (1,0) speech bubble     -> THINKING
+ *   (2,0) rocket thrusters  -> MOVING
+ *   (0,1) big curious eye   -> LOOKFAR
+ *   (1,1) focused/eye shut  -> LOOKCLOSE (Dig/Create/ListBuiltTiles)
+ *   (2,1) plug + lightning  -> CHARGING                                   */
 static const int bot_state_col[] = {
     [BOT_WAITING]   = 0, [BOT_THINKING]  = 1, [BOT_MOVING]    = 2,
-    [BOT_LOOKCLOSE] = 0, [BOT_LOOKFAR]   = 1, [BOT_CHARGING]  = 2,
+    [BOT_LOOKCLOSE] = 1, [BOT_LOOKFAR]   = 0, [BOT_CHARGING]  = 2,
     [BOT_DESTROYED] = 0,
 };
 static const int bot_state_row[] = {

@@ -272,6 +272,15 @@ static cJSON *build_tools_json(void) {
             ? cfg->prompts.tool_list_built_tiles
             : "Returns every structure the bot placed via Create, each with "
               "direction and distance relative to the bot now. Costs 1 energy.";
+    const char *t_wait =
+        (cfg && cfg->prompts.tool_wait[0])
+            ? cfg->prompts.tool_wait
+            : "Stay on the current tile for one hour. No movement. Costs 1 "
+              "energy. On a POWERED habitat (habitat orthogonally adjacent "
+              "to both a battery and a solar_panel) the hour starts with +25 "
+              "energy, so Wait nets +24/hour of recharge. Use Wait to "
+              "recharge up to a target energy instead of MoveTo(adjacent), "
+              "which leaves the habitat and wastes tiles.";
 
     char move_desc[768];
     snprintf(move_desc, sizeof(move_desc), t_move, MOVE_MAX_TILES);
@@ -365,6 +374,8 @@ static cJSON *build_tools_json(void) {
     });
 
     ADD_TOOL("ListBuiltTiles", t_list, { /* no params */ });
+
+    ADD_TOOL("Wait", t_wait, { /* no params */ });
 
     #undef ADD_TOOL
     return tools;
@@ -630,6 +641,11 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
         gl_bot_state = BOT_LOOKCLOSE;
         return gl_list_built_tiles();
     }
+    if (strcmp(name, "Wait") == 0) {
+        /* gl_wait owns its own animation state: BOT_CHARGING with a long
+         * timer while on a powered habitat, BOT_WAITING otherwise. */
+        return gl_wait();
+    }
     ToolResult r = {0};
     snprintf(r.json, TOOL_RESULT_MAX_LEN, "{\"ok\":false,\"error\":\"Unknown tool: %s\"}", name);
     return r;
@@ -696,8 +712,15 @@ static const char *SYSTEM_PROMPT_FALLBACK =
     "- Dig and Create change the current tile. Old Known-features entries\n"
     "  that pointed here are automatically dropped; trust the newest tool\n"
     "  results and the Neighbours line over older LookFar memory.\n"
-    "- If energy drops below 200, get onto a habitat tile and stay there\n"
-    "  until recharged.";
+    "- Recharge on a POWERED habitat (habitat whose N/E/S/W neighbours\n"
+    "  include both a battery and a solar_panel) by calling Wait. The\n"
+    "  habitat grants +25 energy per hour, Wait costs 1, so Wait nets\n"
+    "  +24/hour. DO NOT MoveTo(adjacent) to 'stay' — MoveTo leaves the\n"
+    "  tile. To recharge to a target E, call Wait repeatedly until\n"
+    "  energy >= E.\n"
+    "- If energy<200 or the user asks you to recharge to a specific\n"
+    "  value, MoveTo a powered habitat and Wait until the target is\n"
+    "  reached.";
 
 static const char *active_system_prompt(void) {
     const BotsConfig *cfg = config_active();
