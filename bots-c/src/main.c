@@ -172,13 +172,23 @@ static void draw_reply_dialog(void) {
 static char compose_text[4096] = "";
 static bool compose_edit = false;
 
+static void compose_submit(void) {
+    if (compose_text[0]) {
+        llm_agent_queue_user_message(compose_text);
+        compose_text[0] = '\0';
+    }
+}
+
 static void draw_compose_box(int dy_top) {
     int sw = GetScreenWidth();
     int dw = 450, dh = 140;
     int dx = sw - dw - 10;
     int dy = dy_top;
     Rectangle r = {(float)dx, (float)dy, (float)dw, (float)dh};
-    ui_theme_draw_frame(r, "COMPOSE");
+    /* Title doubles as the pause indicator — the only place the operator
+     * needs to look to know whether the agent loop is currently advancing. */
+    const char *title = llm_agent_paused() ? "COMPOSE :: PAUSED" : "COMPOSE";
+    ui_theme_draw_frame(r, title);
 
     GuiLabel((Rectangle){dx + 12, dy + 22, dw - 24, 20},
              "> queue a message for the bot");
@@ -187,13 +197,30 @@ static void draw_compose_box(int dy_top) {
                    sizeof(compose_text), compose_edit))
         compose_edit = !compose_edit;
 
-    if (GuiButton((Rectangle){dx + dw - 140, dy + dh - 35, 130, 28},
-                  ">> SEND <<")) {
-        if (compose_text[0]) {
-            llm_agent_queue_user_message(compose_text);
-            compose_text[0] = '\0';
-            compose_edit = false;
-        }
+    /* Enter (or numpad Enter) submits while the box has focus, keeping
+     * focus so the operator can keep typing the next message chat-style. */
+    if (compose_edit && compose_text[0] &&
+        (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) {
+        compose_submit();
+    }
+
+    /* Bottom row, left to right:
+     *   [ WIPE MEMORY ]   [ PAUSE / RESUME ]                 [ >> SEND << ]
+     * WIPE clears the LLM's chat history so the bot stops parroting old
+     * decisions; PAUSE freezes the per-turn loop so the operator can
+     * read SYSLOG and queue messages without burning more context. SEND
+     * is unchanged. All three sit on the same baseline. */
+    int by = dy + dh - 35, bh = 28;
+    if (GuiButton((Rectangle){dx + 12, by, 125, bh}, "WIPE MEMORY")) {
+        llm_agent_wipe_memory();
+    }
+    const char *pause_label = llm_agent_paused() ? "RESUME" : "PAUSE";
+    if (GuiButton((Rectangle){dx + 12 + 125 + 8, by, 90, bh}, pause_label)) {
+        llm_agent_set_paused(!llm_agent_paused());
+    }
+    if (GuiButton((Rectangle){dx + dw - 140, by, 130, bh}, ">> SEND <<")) {
+        compose_submit();
+        compose_edit = false;
     }
 }
 

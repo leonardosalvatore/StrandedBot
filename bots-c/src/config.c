@@ -16,7 +16,11 @@ static const char *FALLBACK_SYSTEM_PROMPT =
     "You act by calling ONE tool per turn via native tool_calls. The "
     "bot never sees raw coordinates; it reasons in compass directions "
     "(north, north-east, east, south-east, south, south-west, west, "
-    "north-west) and distance buckets (adjacent|close|medium|far).\n"
+    "north-west) and distance buckets (adjacent|close|medium|far). "
+    "Your default mission is to explore and survive. When the user "
+    "message contains an 'OPERATOR DIRECTIVE:' block, that directive "
+    "supersedes any habit from prior turns and is your active mission "
+    "until it is replaced.\n"
     "\n"
     "OUTPUT STYLE (strict):\n"
     "- Reply in AT MOST 2 short sentences, then emit exactly ONE tool call.\n"
@@ -26,6 +30,14 @@ static const char *FALLBACK_SYSTEM_PROMPT =
     "\n"
     "HARD RULES:\n"
     "- Trust the SYSTEM STATUS line; it is ground truth.\n"
+    "- While an OPERATOR DIRECTIVE is active and energy >= 200, do NOT\n"
+    "  travel back toward your base. If the directive talks about\n"
+    "  exploring, moving far, or reaching a distant tile, IGNORE the\n"
+    "  Habitat / Battery / Solar_panel entries in Known features that\n"
+    "  point back the way you came \xe2\x80\x94 those describe the base you\n"
+    "  just left, not a destination. Keep moving in the directive's\n"
+    "  direction with distance=far. Only return when energy < 200 or\n"
+    "  the directive is replaced.\n"
     "- Each turn you also get a 'Neighbours:' line listing the 8 tiles\n"
     "  touching the bot, labelled N, NE, E, SE, S, SW, W, NW, plus\n"
     "  'Current='. Use it to pick an orthogonally-adjacent Create target\n"
@@ -208,6 +220,9 @@ static void apply_fallback_defaults(BotsConfig *out) {
     set_str(out->prompts.tool_wait,
             sizeof(out->prompts.tool_wait),
             FALLBACK_TOOL_WAIT);
+    /* No hardcoded "custom mission" — empty by default; the start menu
+     * fills it when the operator types something. */
+    out->prompts.custom[0] = '\0';
 }
 
 /* ── JSON overlay ─────────────────────────────────────────────────────────── */
@@ -261,6 +276,9 @@ static bool overlay_json(BotsConfig *out, const char *json_text,
         copy_json_string(prompts, "tool_wait",
                          out->prompts.tool_wait,
                          sizeof(out->prompts.tool_wait));
+        copy_json_string(prompts, "custom",
+                         out->prompts.custom,
+                         sizeof(out->prompts.custom));
     }
 
     cJSON_Delete(root);
@@ -294,6 +312,7 @@ static cJSON *config_to_json(const BotsConfig *cfg) {
     cJSON_AddStringToObject(prompts, "tool_create",           cfg->prompts.tool_create);
     cJSON_AddStringToObject(prompts, "tool_list_built_tiles", cfg->prompts.tool_list_built_tiles);
     cJSON_AddStringToObject(prompts, "tool_wait",             cfg->prompts.tool_wait);
+    cJSON_AddStringToObject(prompts, "custom",                cfg->prompts.custom);
     cJSON_AddItemToObject(root, "prompts", prompts);
 
     return root;

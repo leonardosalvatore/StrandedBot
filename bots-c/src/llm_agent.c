@@ -87,11 +87,24 @@ static char            reply_buf[4096] = "";
 static volatile bool   reply_ready = false;
 static double          reply_deadline = 0.0;
 
-/* Persistent compose-box queue. Messages typed by the user between turns
- * are concatenated here; the agent drains this buffer at the start of
- * each turn and appends it as a "user" message to the LLM conversation. */
-static pthread_mutex_t queued_user_mtx = PTHREAD_MUTEX_INITIALIZER;
-static char            queued_user_buf[4096] = "";
+/* Sticky operator directive. The compose box no longer enqueues one-shot
+ * user lines that scroll out of context after a few turns; instead the
+ * most recent SEND replaces this slot, and the agent re-injects the
+ * directive at the top of every turn's user message until the operator
+ * types a new one (last-writer-wins). The previous one-shot scheme made
+ * exploration orders silently expire after ~5 turns; see the session
+ * log around hours 167 / 175 for the failure pattern this fixes. */
+static pthread_mutex_t directive_mtx = PTHREAD_MUTEX_INITIALIZER;
+static char            current_directive[4096] = "";
+
+/* Operator-control flags, read by the agent loop at each turn boundary.
+ * `volatile` is enough — single-bool writes from the UI thread are
+ * naturally atomic and we never need to read-modify-write. */
+static volatile bool   wipe_requested = false;
+static volatile bool   agent_paused   = false;
+/* Snapshot of the original mission prompt so WIPE MEMORY can re-seed
+ * the conversation with system + mission instead of system alone. */
+static char            initial_prompt_saved[4096] = "";
 
 /* Curl replaced by POSIX socket http_post. */
 
@@ -780,6 +793,31 @@ static void *agent_loop(void *arg) {
     cJSON *tools = build_tools_json();
 
     while (agent_running_flag) {
+        /* Honor a WIPE MEMORY request from the UI thread. We rebuild
+         * messages[] in place: drop everything, then re-seed with the
+         * system prompt + the original mission (if any). The sticky
+         * OPERATOR DIRECTIVE is intentionally preserved across a wipe —
+         * the operator's intent should outlive a chat-history reset,
+         * otherwise WIPE would silently erase the order they just gave. */
+        if (wipe_requested) {
+            int dropped = msg_count;
+            msg_count = 0;
+            append_msg("system", active_system_prompt(), 0);
+            if (initial_prompt_saved[0])
+                append_msg("user", initial_prompt_saved, 0);
+            wipe_requested = false;
+            msg_log("  [Agent] memory wiped (%d messages dropped)", dropped);
+        }
+
+        /* PAUSE: spin in 100ms naps until the operator hits RESUME or
+         * stops the agent. We poll wipe_requested too so a wipe issued
+         * while paused is acknowledged the moment we resume. */
+        while (agent_paused && agent_running_flag && !wipe_requested) {
+            usleep(100000);
+        }
+        if (!agent_running_flag) goto done;
+        if (wipe_requested) continue;
+
         gl_bot_hour_count++;
         int hour = gl_bot_hour_count;
         if (!gl_advance_solar_flare_hour(hour)) {
@@ -797,20 +835,14 @@ static void *agent_loop(void *arg) {
         gl_bot_state = BOT_THINKING;
         consume_energy_wrapper();
 
-        /* Drain the compose-box queue: inject any user-typed messages
-         * into the conversation BEFORE we build this turn's SYSTEM STATUS
-         * so the bot sees the new instruction on this very hour. */
-        pthread_mutex_lock(&queued_user_mtx);
-        if (queued_user_buf[0]) {
-            char injected[sizeof(queued_user_buf)];
-            snprintf(injected, sizeof(injected), "%s", queued_user_buf);
-            queued_user_buf[0] = '\0';
-            pthread_mutex_unlock(&queued_user_mtx);
-            msg_log("  [User] %s", injected);
-            append_msg("user", injected, hour);
-        } else {
-            pthread_mutex_unlock(&queued_user_mtx);
-        }
+        /* Snapshot the sticky OPERATOR DIRECTIVE for this turn. Held in
+         * a local buffer so we don't keep the mutex while building the
+         * (slow) status string below. The directive is NOT cleared here —
+         * it persists until the operator types a new compose message. */
+        char directive_now[sizeof(current_directive)];
+        pthread_mutex_lock(&directive_mtx);
+        snprintf(directive_now, sizeof(directive_now), "%s", current_directive);
+        pthread_mutex_unlock(&directive_mtx);
 
         /* Build status grounding */
         int gx, gy;
@@ -898,11 +930,27 @@ static void *agent_loop(void *arg) {
                 neighbours);
         }
 
+        /* Prepend the sticky OPERATOR DIRECTIVE (if any) to the per-turn
+         * user message. Sending it as part of the SAME user message —
+         * rather than a separate message — keeps the existing user/
+         * assistant alternation invariant intact, and means the directive
+         * sits literally adjacent to the SYSTEM STATUS the bot will base
+         * its next decision on (instead of being buried in history). */
+        char turn_user[sizeof(status) + sizeof(directive_now) + 128];
+        if (directive_now[0]) {
+            snprintf(turn_user, sizeof(turn_user),
+                "OPERATOR DIRECTIVE (sticky, follow this until replaced):\n"
+                "%s\n\n%s",
+                directive_now, status);
+        } else {
+            snprintf(turn_user, sizeof(turn_user), "%s", status);
+        }
+
         /* Persist status grounding as a user message in history so subsequent
          * turns see a clean user/assistant alternation (required by mistral
          * and similar chat templates). Consecutive user messages will be
          * collapsed at build time. */
-        append_msg("user", status, hour);
+        append_msg("user", turn_user, hour);
 
         /* Keep the request from exceeding the server's context window. */
         trim_history_to_budget(HISTORY_BYTE_BUDGET);
@@ -1123,6 +1171,19 @@ void llm_agent_start(const char *initial_prompt) {
     if (initial_prompt && initial_prompt[0]) {
         append_msg("user", initial_prompt, 0);
     }
+    /* Stash the mission so WIPE MEMORY can re-seed identically without
+     * the UI having to remember and re-pass it. */
+    if (initial_prompt) {
+        strncpy(initial_prompt_saved, initial_prompt,
+                sizeof(initial_prompt_saved) - 1);
+        initial_prompt_saved[sizeof(initial_prompt_saved) - 1] = '\0';
+    } else {
+        initial_prompt_saved[0] = '\0';
+    }
+    /* A new session always starts unpaused; if the operator left the
+     * previous run paused, a fresh start should not inherit that. */
+    agent_paused   = false;
+    wipe_requested = false;
 
     pthread_create(&agent_thread, NULL, agent_loop, NULL);
     pthread_detach(agent_thread);
@@ -1144,21 +1205,35 @@ void llm_agent_submit_reply(const char *text) {
     pthread_mutex_unlock(&reply_mtx);
 }
 
+void llm_agent_wipe_memory(void) {
+    /* Latched flag — the agent loop drains it at the next turn boundary.
+     * No mutex needed: we only ever set it true here and clear it on the
+     * agent thread. */
+    wipe_requested = true;
+}
+
+void llm_agent_set_paused(bool paused) {
+    agent_paused = paused;
+}
+
+bool llm_agent_paused(void) {
+    return agent_paused;
+}
+
 void llm_agent_queue_user_message(const char *text) {
     if (!text || !text[0]) return;
-    pthread_mutex_lock(&queued_user_mtx);
-    size_t used = strlen(queued_user_buf);
-    size_t cap = sizeof(queued_user_buf) - 1;
-    if (used > 0 && used < cap) {
-        queued_user_buf[used++] = '\n';
-        queued_user_buf[used] = '\0';
-    }
-    size_t room = cap - used;
-    if (room > 0) {
-        strncpy(queued_user_buf + used, text, room);
-        queued_user_buf[cap] = '\0';
-    }
-    pthread_mutex_unlock(&queued_user_mtx);
+    /* Last-writer-wins: SEND replaces the sticky OPERATOR DIRECTIVE
+     * instead of appending. The previous "drain once and clear" queue
+     * meant exploration orders silently expired after a few turns; the
+     * sticky slot is re-injected on every turn until the operator types
+     * a new directive (typing "" is currently treated as no-op — to wipe
+     * the directive the operator can SEND a single space or a "resume
+     * default behaviour" sentence). */
+    pthread_mutex_lock(&directive_mtx);
+    strncpy(current_directive, text, sizeof(current_directive) - 1);
+    current_directive[sizeof(current_directive) - 1] = '\0';
+    pthread_mutex_unlock(&directive_mtx);
+    msg_log("  [Operator] %s", text);
 }
 
 bool llm_agent_waiting_for_reply(void) {

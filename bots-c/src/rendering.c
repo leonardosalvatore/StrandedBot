@@ -53,6 +53,23 @@ static const int bot_state_col[] = {
     [BOT_LOOKCLOSE] = 1, [BOT_LOOKFAR]   = 0, [BOT_CHARGING]  = 2,
     [BOT_DESTROYED] = 0,
 };
+/* Visual centre of the actual robot art within each 150x150 sprite cell, in
+ * source pixels. Empirically measured from the opaque-pixel bounding box of
+ * each pose in resources/bots.png — the art is NOT centred in the cell
+ * (e.g. WAITING's art centre is at (93,78) within a 150x150 cell whose
+ * geometric centre is (75,75)). Anchoring the destination on these per-pose
+ * centres puts the visible robot on the tile centre instead of letting the
+ * sprite's empty padding pull it off-grid. */
+static const int bot_state_vis_cx[] = {
+    [BOT_WAITING]   = 93, [BOT_THINKING]  = 55, [BOT_MOVING]    = 68,
+    [BOT_LOOKCLOSE] = 76, [BOT_LOOKFAR]   = 74, [BOT_CHARGING]  = 87,
+    [BOT_DESTROYED] = 93,
+};
+static const int bot_state_vis_cy[] = {
+    [BOT_WAITING]   = 78, [BOT_THINKING]  = 65, [BOT_MOVING]    = 69,
+    [BOT_LOOKCLOSE] = 78, [BOT_LOOKFAR]   = 80, [BOT_CHARGING]  = 67,
+    [BOT_DESTROYED] = 78,
+};
 static const int bot_state_row[] = {
     [BOT_WAITING]   = 0, [BOT_THINKING]  = 0, [BOT_MOVING]    = 0,
     [BOT_LOOKCLOSE] = 1, [BOT_LOOKFAR]   = 1, [BOT_CHARGING]  = 1,
@@ -80,7 +97,11 @@ static const int tile_row[TILE_TYPE_COUNT] = {
 /* ── Camera state (mouse pan & zoom) ─────────────────────────────────────── */
 static float   cam_pan_x = 0.0f;   /* world-space offset from bot */
 static float   cam_pan_y = 0.0f;
-static float   cam_zoom  = 1.0f;   /* multiplier applied on top of base scale */
+/* Default to 0.5x (i.e. 50% of the previous baseline) so a fresh map
+ * shows roughly twice the area without the operator having to wheel-zoom
+ * on every run. The KEY_HOME / KEY_R reset below uses the same value. */
+#define CAM_ZOOM_DEFAULT 2.5f
+static float   cam_zoom  = CAM_ZOOM_DEFAULT;
 static bool    cam_panning = false;
 static Vector2 cam_pan_anchor = {0};
 
@@ -175,7 +196,7 @@ static void update_camera_input(float base_scale, float bot_cx, float bot_cy,
     /* Reset. */
     if (IsKeyPressed(KEY_HOME) || IsKeyPressed(KEY_R)) {
         cam_pan_x = cam_pan_y = 0.0f;
-        cam_zoom = 1.0f;
+        cam_zoom = CAM_ZOOM_DEFAULT;
         cam_panning = false;
         return;
     }
@@ -327,7 +348,7 @@ void draw_game(void) {
 
     /* Bot — drawn in world space, size in world units so Camera2D scales. */
     if (bot_sprite_loaded) {
-        float bot_draw_world = (float)BOT_RADIUS * 1.5f;
+        float bot_draw_world = (float)BOT_RADIUS * 0.75f;
         int idx = ((int)snap_state >= 0 && (int)snap_state < BOT_STATE_SPRITES)
                       ? (int)snap_state : 0;
         int col = bot_state_col[idx];
@@ -341,9 +362,20 @@ void draw_game(void) {
             (float)BOT_SPRITE_SIZE - 2.0f * BOT_SRC_INSET,
             (float)BOT_SPRITE_SIZE - 2.0f * BOT_SRC_INSET,
         };
+        /* Anchor the destination on the per-pose visual centre so the
+         * actual robot art lands on (bot_cx, bot_cy). The sprite cell is
+         * still drawn at full BOT_SPRITE_SIZE×BOT_SPRITE_SIZE — only the
+         * dst's top-left moves. We then shift the whole sprite UP by half
+         * its drawn height so the bot reads as 'standing on' the tile
+         * (visual centre level with the tile's top edge) rather than
+         * sinking into it. */
+        const float BOT_LIFT = 0.5f;   /* fraction of bot_draw_world */
+        float vis_cx = (float)bot_state_vis_cx[idx];
+        float vis_cy = (float)bot_state_vis_cy[idx];
         Rectangle dst = {
-            bot_cx - bot_draw_world / 2.0f,
-            bot_cy - bot_draw_world / 2.0f,
+            bot_cx - (vis_cx / (float)BOT_SPRITE_SIZE) * bot_draw_world,
+            bot_cy - (vis_cy / (float)BOT_SPRITE_SIZE) * bot_draw_world
+                   - bot_draw_world * BOT_LIFT,
             bot_draw_world, bot_draw_world,
         };
         DrawTexturePro(bot_sprite, src, dst, (Vector2){0, 0}, 0.0f, WHITE);

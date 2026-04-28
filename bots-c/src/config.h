@@ -34,6 +34,12 @@ typedef struct {
         char tool_create[1024];
         char tool_list_built_tiles[256];
         char tool_wait[512];
+        /* Last "Custom prompt" the operator typed into the start menu's
+         * mission box, persisted across runs via bots-custom.json so the
+         * field is pre-filled on the next launch. Empty string means
+         * "no custom mission" (the agent then runs with just the system
+         * prompt seeded). Size matches start_menu's buf_prompt. */
+        char custom[4096];
     } prompts;
 } BotsConfig;
 

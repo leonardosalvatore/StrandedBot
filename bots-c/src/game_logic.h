@@ -23,7 +23,15 @@
 #define BOT_RADIUS      10
 #define BOT_SPEED       220
 #define BOT_MOVE_SPEED  (TILE_SIZE * 2)
-#define MOVE_MAX_TILES  20
+/* Per-call MoveTo cap. Also defines what `distance=far` walks (see
+ * dist_bucket_walk_tiles). 40 so a single explore
+ * order from the operator ("go east really far") covers a useful
+ * fraction of the map in one tool call instead of forcing the bot to
+ * stitch dozens of short hops together — each of which previously
+ * re-exposed the bot to the "Habitat west, return home" temptation
+ * baked into per-turn Known features. Costs 1 energy per tile walked,
+ * so the operator must have built reserves before issuing far moves. */
+#define MOVE_MAX_TILES  40
 
 /* ── Default new-game values ─────────────────────────────────────────────── */
 #define STARTING_BOT_ENERGY              2000
@@ -93,7 +101,9 @@ typedef enum {
  *              neighbour of the bot; used for cluster extension)
  *   close    : 2-5 tiles
  *   medium   : 6-15 tiles
- *   far      : 16+ tiles (clamped by MOVE_MAX_TILES in moves) */
+ *   far      : 16+ tiles (a far-bucket move walks up to MOVE_MAX_TILES,
+ *              currently 100; intermediate buckets keep their old
+ *              suggested step sizes — see dist_bucket_walk_tiles) */
 typedef enum {
     DIST_NONE = 0,
     DIST_ADJACENT,

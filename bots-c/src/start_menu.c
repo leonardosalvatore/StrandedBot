@@ -5,6 +5,16 @@
 #include "ui_theme.h"
 
 #define RAYGUI_IMPLEMENTATION
+/* Slow down the initial auto-repeat in GuiTextBox.
+ *
+ * raygui's defaults (raygui.h ~line 2441) make backspace / delete / arrow
+ * keys start repeating after just COOLDOWN=40 frames (~0.66s at 60 FPS),
+ * which fires accidentally every time the operator holds a key for a
+ * fraction of a second longer than they intended (e.g. while moving the
+ * cursor through the long custom prompt). Bumping the cooldown to 90
+ * frames (~1.5s) gives a much more deliberate "press-and-hold to start
+ * repeating" feel without affecting the post-cooldown repeat rate. */
+#define RAYGUI_TEXTBOX_AUTO_CURSOR_COOLDOWN 90
 #include "raygui.h"
 
 #include <stdio.h>
@@ -52,7 +62,11 @@ static void refresh_widgets_from_cfg(void) {
     snprintf(buf_energy, sizeof(buf_energy), "%d", menu_cfg.game.energy);
     snprintf(buf_inv,    sizeof(buf_inv),    "%d", menu_cfg.game.inventory_rocks);
     snprintf(buf_flare,  sizeof(buf_flare),  "%d", menu_cfg.game.hours_solar_flare_every);
-    buf_prompt[0] = '\0';
+    /* Pre-fill from the persisted "last custom prompt" so the operator
+     * doesn't have to retype their mission on every launch. REVERT TO
+     * DEFAULTS clears it (defaults set custom = ""). */
+    strncpy(buf_prompt, menu_cfg.prompts.custom, sizeof(buf_prompt) - 1);
+    buf_prompt[sizeof(buf_prompt) - 1] = '\0';
 }
 
 void start_menu_init(void) {
@@ -78,6 +92,10 @@ static void sync_cfg_from_widgets(void) {
     menu_cfg.game.hours_solar_flare_every = atoi(buf_flare);
     if (menu_cfg.game.hours_solar_flare_every < 1)
         menu_cfg.game.hours_solar_flare_every = 1;
+
+    strncpy(menu_cfg.prompts.custom, buf_prompt,
+            sizeof(menu_cfg.prompts.custom) - 1);
+    menu_cfg.prompts.custom[sizeof(menu_cfg.prompts.custom) - 1] = '\0';
 }
 
 static void fill_result(void) {
@@ -131,15 +149,10 @@ bool start_menu_update(void) {
     float ew  = win_w - (ex - ox) - 20;
     float label_w = ex - lx - 10;
 
-    /* Run / Revert buttons */
-    if (GuiButton((Rectangle){lx, y, (win_w - 40) / 2 - 5, row_h + 5},
-                  ">> RUN <<")) {
-        fill_result();
-        menu_active = false;
-        return false;
-    }
-    if (GuiButton((Rectangle){lx + (win_w - 40) / 2 + 5, y,
-                              (win_w - 40) / 2 - 5, row_h + 5},
+    /* REVERT lives at the top — it's a setup-time reset the operator
+     * generally hits BEFORE filling things in. RUN moved to the bottom
+     * (after the custom prompt) so it's the natural last action. */
+    if (GuiButton((Rectangle){lx, y, win_w - 40, row_h + 5},
                   ">> REVERT TO DEFAULTS <<")) {
         config_revert_custom_to_defaults();
         config_load_custom(&menu_cfg);
@@ -186,6 +199,17 @@ bool start_menu_update(void) {
     if (GuiTextBox((Rectangle){lx, y, win_w - 40, 80},
                    buf_prompt, sizeof(buf_prompt), edit_prompt))
         edit_prompt = !edit_prompt;
+    y += 80 + gap;
+
+    /* RUN button — the final action, anchored at the bottom of the panel
+     * so it stays visible and reachable after the operator has filled in
+     * the form (especially the custom prompt above it). */
+    if (GuiButton((Rectangle){lx, y, win_w - 40, row_h + 5},
+                  ">> RUN <<")) {
+        fill_result();
+        menu_active = false;
+        return false;
+    }
 
     return true;
 }
