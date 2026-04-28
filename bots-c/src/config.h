@@ -3,26 +3,20 @@
 
 #include <stdbool.h>
 
-/* Per-scenario preset. Sizes match the start-menu text buffers and the
- * mission-prompt slot that used to be hardcoded in main.c. */
+/* Single global preset. Sizes match the start-menu text buffers. */
 typedef struct {
-    int  rocks_amount;
-    int  initial_town_size;
-    int  energy;
-    int  inventory_rocks;
-    int  hours_solar_flare_every;
-    char mission_prompt[4096];
-} ScenarioConfig;
+    int rocks_amount;
+    int initial_town_size;
+    int energy;
+    int inventory_rocks;
+    int hours_solar_flare_every;
+} GamePreset;
 
 /* Everything the start menu can tweak, plus every LLM prompt the agent uses.
  * Two JSON files back this struct: a shipped read-only defaults file and a
  * user-writable custom file. */
 typedef struct {
-    ScenarioConfig explorer;
-    ScenarioConfig builder;
-
-    int  default_scenario;          /* 0 = explorer, 1 = builder */
-    bool interactive_mode;
+    GamePreset game;
 
     struct {
         char start_script[512];

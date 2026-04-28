@@ -73,10 +73,9 @@ binaries, or just run `llama-server` yourself with the same flags — the
 client only cares that there's an OpenAI-compatible endpoint at
 `http://127.0.0.1:<llama.port>/v1/chat/completions` (default `53425`).
 
-The start menu lets you pick:
+The start menu is a single flat preset (no scenario picker, no
+default-prompt option, no interactive-mode toggle):
 
-- **Scenario** — *Explorer* (maximise distance covered) or
-  *Builder* (maximise structures placed)
 - **Rocks amount** — density of rock clusters in the procedural map
 - **Initial town size** — pre-placed habitat cluster (0 to disable)
 - **Starting energy** and **starting inventory rocks**
@@ -84,11 +83,15 @@ The start menu lets you pick:
 - **llama start script** — path to the launcher script the game execs
 - **Auto-start llama server** — fork the script above if nothing is
   already listening on `:<llama.port>`
-- **Interactive mode** — pause when the bot asks a `?` question and let
-  you type a reply before the turn continues
-- **Custom prompt** — override the built-in mission prompt
+- **Custom prompt (optional)** — extra mission text prepended to the
+  conversation; leave it empty and the bot just runs against the system
+  prompt + per-turn telemetry
 - **Revert to defaults** — overwrite `bots-custom.json` with
   `bots-defaults.json` and reload the menu
+
+The bot pauses for a typed reply whenever its message contains a `?`,
+and the always-visible compose box lets you queue a user message for the
+bot at any time.
 
 Every widget state is written to `bots-custom.json` the instant you hit
 RUN, so the next launch (or `--autostart-custom`) replays it.
@@ -113,10 +116,10 @@ the `bots` executable) hold every tunable knob, including the full LLM
 prompt set:
 
 - **`bots-defaults.json`** — shipped with the repo, read-only baseline.
-  Includes the Explorer and Builder mission prompts, the agent
-  `SYSTEM_PROMPT`, every per-tool description (`MoveTo`, `LookFar`, `Dig`,
-  `Create`, `ListBuiltTiles`), the llama launcher script path, and per-
-  scenario presets (rocks, energy, inventory, flare interval, …).
+  Includes the agent `SYSTEM_PROMPT`, every per-tool description
+  (`MoveTo`, `LookFar`, `Dig`, `Create`, `ListBuiltTiles`), the llama
+  launcher script path, and the single game preset (rocks, energy,
+  inventory, flare interval, …).
 - **`bots-custom.json`** — user-writable overrides. Created the first
   time you hit RUN in the start menu; rewritten on every subsequent run.
   You can also hand-edit it.
@@ -189,7 +192,7 @@ cluster.
 | `bots-c/src/game_logic.c`| Map, tools, solar flares, power network, particle spawns |
 | `bots-c/src/rendering.c` | Viewport camera, tile / bot drawing                  |
 | `bots-c/src/particles.c` | Scan pulses, build sparkles, dig dust, flare zaps    |
-| `bots-c/src/start_menu.c`| Start screen (raygui), scenario + custom prompt      |
+| `bots-c/src/start_menu.c`| Start screen (raygui), preset fields + custom prompt |
 | `bots-c/src/ui_theme.c`  | Hacker-terminal raygui theme + TTF font loader       |
 | `bots-c/src/llm_agent.c` | OpenAI-compatible chat + tool-call loop              |
 | `bots-c/src/llama_launcher.c` | fork/exec + lifecycle for `llama-server`        |

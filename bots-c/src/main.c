@@ -218,7 +218,7 @@ static void draw_postmortem_overlay(void) {
     /* Dim veil so the frozen map stays visible behind the panel. */
     DrawRectangle(0, 0, sw, sh, (Color){0, 0, 0, 170});
 
-    int pw = 560, ph = 430;
+    int pw = 560, ph = 645;
     int px = (sw - pw) / 2, py = (sh - ph) / 2;
     Rectangle r = { (float)px, (float)py, (float)pw, (float)ph };
     const char *title = postmortem_stats.destroyed_by_flare
@@ -305,19 +305,15 @@ typedef enum {
 
 static void synthesise_result_from_cfg(const BotsConfig *cfg,
                                        StartMenuResult *out) {
-    const ScenarioConfig *s = cfg->default_scenario == 1 ? &cfg->builder
-                                                         : &cfg->explorer;
+    const GamePreset *g = &cfg->game;
     memset(out, 0, sizeof(*out));
-    out->started  = true;
-    out->scenario = cfg->default_scenario == 1 ? SCENARIO_BUILDER
-                                               : SCENARIO_EXPLORER;
-    out->rocks_amount            = s->rocks_amount > 0 ? s->rocks_amount : 1;
-    out->initial_town_size       = s->initial_town_size;
-    out->energy                  = s->energy > 0 ? s->energy : 1;
-    out->inventory_rocks         = s->inventory_rocks;
-    out->hours_solar_flare_every = s->hours_solar_flare_every > 0
-                                       ? s->hours_solar_flare_every : 1;
-    out->interactive_mode        = cfg->interactive_mode;
+    out->started                 = true;
+    out->rocks_amount            = g->rocks_amount > 0 ? g->rocks_amount : 1;
+    out->initial_town_size       = g->initial_town_size;
+    out->energy                  = g->energy > 0 ? g->energy : 1;
+    out->inventory_rocks         = g->inventory_rocks;
+    out->hours_solar_flare_every = g->hours_solar_flare_every > 0
+                                       ? g->hours_solar_flare_every : 1;
 
     strncpy(out->llama_start_script, cfg->llama.start_script,
             sizeof(out->llama_start_script) - 1);
@@ -431,19 +427,14 @@ int main(int argc, char **argv) {
                 }
 
                 if (llm_enabled) {
-                    char prompt[4096];
-                    if (r.use_custom_prompt && r.custom_prompt[0]) {
-                        strncpy(prompt, r.custom_prompt, sizeof(prompt) - 1);
-                        prompt[sizeof(prompt) - 1] = '\0';
-                    } else {
-                        const ScenarioConfig *sc =
-                            r.scenario == SCENARIO_BUILDER ? &g_cfg.builder
-                                                           : &g_cfg.explorer;
-                        strncpy(prompt, sc->mission_prompt,
-                                sizeof(prompt) - 1);
-                        prompt[sizeof(prompt) - 1] = '\0';
-                    }
-                    llm_agent_start(prompt, r.interactive_mode);
+                    /* Empty custom prompt is fine: the agent then starts
+                     * with only the system prompt seeded and lets the
+                     * per-turn SYSTEM STATUS messages drive everything. */
+                    const char *prompt = (r.use_custom_prompt &&
+                                          r.custom_prompt[0])
+                                             ? r.custom_prompt
+                                             : "";
+                    llm_agent_start(prompt);
                 }
 
                 msg_log("Game started.");

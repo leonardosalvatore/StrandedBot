@@ -38,36 +38,25 @@ static bool edit_flare   = false;
 static bool edit_script  = false;
 static bool edit_prompt  = false;
 
-static int  scenario           = 0; /* 0=Explorer, 1=Builder */
-static bool interactive        = true;
-static bool llama_auto         = true;
-static bool show_custom_prompt = false;
-
-/* Pull the preset for `sc` out of menu_cfg into the editable buffers. */
-static void apply_preset_from_cfg(int sc) {
-    const ScenarioConfig *s = (sc == 1) ? &menu_cfg.builder : &menu_cfg.explorer;
-    snprintf(buf_rocks,  sizeof(buf_rocks),  "%d", s->rocks_amount);
-    snprintf(buf_town,   sizeof(buf_town),   "%d", s->initial_town_size);
-    snprintf(buf_energy, sizeof(buf_energy), "%d", s->energy);
-    snprintf(buf_inv,    sizeof(buf_inv),    "%d", s->inventory_rocks);
-    snprintf(buf_flare,  sizeof(buf_flare),  "%d", s->hours_solar_flare_every);
-}
+static bool llama_auto = true;
 
 /* Populate every editable widget from menu_cfg. Called on init and after
  * REVERT TO DEFAULTS. */
 static void refresh_widgets_from_cfg(void) {
-    scenario    = menu_cfg.default_scenario == 1 ? 1 : 0;
-    interactive = menu_cfg.interactive_mode;
-    llama_auto  = menu_cfg.llama.auto_start;
+    llama_auto = menu_cfg.llama.auto_start;
     strncpy(buf_script, menu_cfg.llama.start_script, sizeof(buf_script) - 1);
     buf_script[sizeof(buf_script) - 1] = '\0';
-    apply_preset_from_cfg(scenario);
+
+    snprintf(buf_rocks,  sizeof(buf_rocks),  "%d", menu_cfg.game.rocks_amount);
+    snprintf(buf_town,   sizeof(buf_town),   "%d", menu_cfg.game.initial_town_size);
+    snprintf(buf_energy, sizeof(buf_energy), "%d", menu_cfg.game.energy);
+    snprintf(buf_inv,    sizeof(buf_inv),    "%d", menu_cfg.game.inventory_rocks);
+    snprintf(buf_flare,  sizeof(buf_flare),  "%d", menu_cfg.game.hours_solar_flare_every);
     buf_prompt[0] = '\0';
 }
 
 void start_menu_init(void) {
     menu_active = true;
-    show_custom_prompt = false;
     memset(&result, 0, sizeof(result));
     config_load_custom(&menu_cfg);
     refresh_widgets_from_cfg();
@@ -75,44 +64,38 @@ void start_menu_init(void) {
 
 /* Copy edited buffers back into menu_cfg so we can persist them. */
 static void sync_cfg_from_widgets(void) {
-    menu_cfg.default_scenario = scenario == 1 ? 1 : 0;
-    menu_cfg.interactive_mode = interactive;
     menu_cfg.llama.auto_start = llama_auto;
     strncpy(menu_cfg.llama.start_script, buf_script,
             sizeof(menu_cfg.llama.start_script) - 1);
     menu_cfg.llama.start_script[sizeof(menu_cfg.llama.start_script) - 1] = '\0';
 
-    ScenarioConfig *s = (scenario == 1) ? &menu_cfg.builder : &menu_cfg.explorer;
-    s->rocks_amount            = atoi(buf_rocks);
-    if (s->rocks_amount < 1) s->rocks_amount = 1;
-    s->initial_town_size       = atoi(buf_town);
-    s->energy                  = atoi(buf_energy);
-    if (s->energy < 1) s->energy = 1;
-    s->inventory_rocks         = atoi(buf_inv);
-    s->hours_solar_flare_every = atoi(buf_flare);
-    if (s->hours_solar_flare_every < 1) s->hours_solar_flare_every = 1;
+    menu_cfg.game.rocks_amount            = atoi(buf_rocks);
+    if (menu_cfg.game.rocks_amount < 1) menu_cfg.game.rocks_amount = 1;
+    menu_cfg.game.initial_town_size       = atoi(buf_town);
+    menu_cfg.game.energy                  = atoi(buf_energy);
+    if (menu_cfg.game.energy < 1) menu_cfg.game.energy = 1;
+    menu_cfg.game.inventory_rocks         = atoi(buf_inv);
+    menu_cfg.game.hours_solar_flare_every = atoi(buf_flare);
+    if (menu_cfg.game.hours_solar_flare_every < 1)
+        menu_cfg.game.hours_solar_flare_every = 1;
 }
 
 static void fill_result(void) {
     sync_cfg_from_widgets();
 
-    result.started  = true;
-    result.scenario = scenario == 0 ? SCENARIO_EXPLORER : SCENARIO_BUILDER;
-    const ScenarioConfig *s = (scenario == 1) ? &menu_cfg.builder
-                                              : &menu_cfg.explorer;
-    result.rocks_amount            = s->rocks_amount;
-    result.initial_town_size       = s->initial_town_size;
-    result.energy                  = s->energy;
-    result.inventory_rocks         = s->inventory_rocks;
-    result.hours_solar_flare_every = s->hours_solar_flare_every;
-    result.interactive_mode        = interactive;
+    result.started                 = true;
+    result.rocks_amount            = menu_cfg.game.rocks_amount;
+    result.initial_town_size       = menu_cfg.game.initial_town_size;
+    result.energy                  = menu_cfg.game.energy;
+    result.inventory_rocks         = menu_cfg.game.inventory_rocks;
+    result.hours_solar_flare_every = menu_cfg.game.hours_solar_flare_every;
 
     strncpy(result.llama_start_script, menu_cfg.llama.start_script,
             sizeof(result.llama_start_script) - 1);
     result.llama_start_script[sizeof(result.llama_start_script) - 1] = '\0';
     result.llama_auto_start = llama_auto;
 
-    if (show_custom_prompt && buf_prompt[0]) {
+    if (buf_prompt[0]) {
         result.use_custom_prompt = true;
         strncpy(result.custom_prompt, buf_prompt,
                 sizeof(result.custom_prompt) - 1);
@@ -128,7 +111,7 @@ bool start_menu_update(void) {
 
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     int win_w = 740;
-    int win_h = show_custom_prompt ? 610 : 490;
+    int win_h = 560;
     if (win_w > sw - 20) win_w = sw - 20;
     if (win_h > sh - 20) win_h = sh - 20;
     int ox = (sw - win_w) / 2, oy = (sh - win_h) / 2;
@@ -148,30 +131,12 @@ bool start_menu_update(void) {
     float ew  = win_w - (ex - ox) - 20;
     float label_w = ex - lx - 10;
 
-    /* Scenario toggle */
-    GuiLabel((Rectangle){lx, y, label_w, row_h}, "> SCENARIO.....:");
-    if (GuiButton((Rectangle){ex, y, 160, row_h},
-                  scenario == 0 ? "[*] EXPLORER" : "[ ] EXPLORER")) {
-        scenario = 0; apply_preset_from_cfg(0);
-    }
-    if (GuiButton((Rectangle){ex + 170, y, 160, row_h},
-                  scenario == 1 ? "[*] BUILDER" : "[ ] BUILDER")) {
-        scenario = 1; apply_preset_from_cfg(1);
-    }
-    y += row_h + gap;
-
-    /* Start buttons */
-    if (GuiButton((Rectangle){lx, y, win_w - 40, row_h + 5},
-                  ">> RUN WITH DEFAULT PROMPT <<")) {
-        show_custom_prompt = false;
+    /* Run / Revert buttons */
+    if (GuiButton((Rectangle){lx, y, (win_w - 40) / 2 - 5, row_h + 5},
+                  ">> RUN <<")) {
         fill_result();
         menu_active = false;
         return false;
-    }
-    y += row_h + 5 + gap;
-    if (GuiButton((Rectangle){lx, y, (win_w - 40) / 2 - 5, row_h + 5},
-                  ">> RUN WITH CUSTOM PROMPT <<")) {
-        show_custom_prompt = true;
     }
     if (GuiButton((Rectangle){lx + (win_w - 40) / 2 + 5, y,
                               (win_w - 40) / 2 - 5, row_h + 5},
@@ -202,38 +167,25 @@ bool start_menu_update(void) {
     y += gap;
 
     /* Toggles */
-    GuiCheckBox((Rectangle){lx, y, 18, 18}, "  INTERACTIVE MODE (reply to bot)",
-                &interactive);
-    y += 24;
     GuiCheckBox((Rectangle){lx, y, 18, 18},
                 "  AUTO-START LLAMA SERVER IF NOT RUNNING",
                 &llama_auto);
     y += row_h;
 
-    /* Custom prompt area */
-    if (show_custom_prompt) {
-        GuiLabel((Rectangle){lx, y, win_w - 40, row_h}, "> CUSTOM PROMPT:");
-        y += row_h;
-        /* IMPORTANT: raygui 4.0 GuiTextBox silently refuses input whenever
-         * TEXT_WRAP_MODE != TEXT_WRAP_NONE (see raygui.h, ~line 2492). The
-         * previous version set TEXT_WRAP_WORD here, which made the box
-         * completely uneditable. raygui 4.0 textboxes are single-line and
-         * scroll horizontally when the text exceeds the width; long
-         * prompts are fine, they just aren't visually wrapped. */
-        if (GuiTextBox((Rectangle){lx, y, win_w - 40, 80},
-                       buf_prompt, sizeof(buf_prompt), edit_prompt))
-            edit_prompt = !edit_prompt;
-        y += 88;
-        if (GuiButton((Rectangle){lx, y, 260, row_h + 3},
-                      ">> CONFIRM & RUN <<")) {
-            fill_result();
-            menu_active = false;
-            return false;
-        }
-        if (GuiButton((Rectangle){lx + 270, y, 150, row_h + 3}, "CANCEL")) {
-            show_custom_prompt = false;
-        }
-    }
+    /* Custom prompt area (always visible; empty is fine and means "no
+     * mission prompt", which the agent handles cleanly). */
+    GuiLabel((Rectangle){lx, y, win_w - 40, row_h},
+             "> CUSTOM PROMPT (optional):");
+    y += row_h;
+    /* IMPORTANT: raygui 4.0 GuiTextBox silently refuses input whenever
+     * TEXT_WRAP_MODE != TEXT_WRAP_NONE (see raygui.h, ~line 2492). The
+     * previous version set TEXT_WRAP_WORD here, which made the box
+     * completely uneditable. raygui 4.0 textboxes are single-line and
+     * scroll horizontally when the text exceeds the width; long
+     * prompts are fine, they just aren't visually wrapped. */
+    if (GuiTextBox((Rectangle){lx, y, win_w - 40, 80},
+                   buf_prompt, sizeof(buf_prompt), edit_prompt))
+        edit_prompt = !edit_prompt;
 
     return true;
 }

@@ -76,7 +76,6 @@ static ChatMsg  messages[MAX_MESSAGES];
 static int      msg_count = 0;
 
 static char     agent_model[256] = "";
-static bool     agent_interactive = false;
 static volatile bool agent_running_flag = false;
 static pthread_t agent_thread;
 
@@ -728,32 +727,7 @@ static const char *active_system_prompt(void) {
     return SYSTEM_PROMPT_FALLBACK;
 }
 
-static const char *POWER_GRID_RULES =
-    "Power works only through orthogonal adjacency of habitat, battery, and "
-    "solar_panel tiles. There is no wiring or connect step.";
-
-static void build_base_prompt(char *out, size_t cap, int scenario) {
-    const char *head =
-        "YOUR MISSION:\n"
-        "Stay in a habitat if energy is below 200 to avoid solar flare damage,";
-
-    if (scenario == 1) { /* Builder */
-        snprintf(out, cap,
-            "%s expand habitats to build a big town. "
-            "Create habitats, batteries, and solar panels in expanding clusters.\n"
-            "Keep pushing expansion forward instead of revisiting old tiles.\n"
-            "%s\nEND OF YOUR MISSION DEFINITIONS",
-            head, POWER_GRID_RULES);
-    } else { /* Explorer */
-        snprintf(out, cap,
-            "%s explore the map. Build habitat and solar+storage network only to recharge. "
-            "Keep moving forward instead of looping.\n"
-            "%s\nEND OF YOUR MISSION DEFINITIONS",
-            head, POWER_GRID_RULES);
-    }
-}
-
-/* ── Wait for user reply (interactive mode) ──────────────────────────────── */
+/* ── Wait for user reply ─────────────────────────────────────────────────── */
 static const char *wait_for_user_reply(void) {
     pthread_mutex_lock(&reply_mtx);
     waiting_reply = true;
@@ -794,16 +768,13 @@ static void *agent_loop(void *arg) {
     (void)arg;
     msg_log("============================================================");
     msg_log("LLM PLAY MODE - model: %s", agent_model);
-    msg_log("Interactive: %s", agent_interactive ? "yes" : "no");
     msg_log("============================================================");
 
-    /* Messages were already seeded by llm_agent_start (system + user prompt).
-     * If somehow empty, add a fallback. */
-    if (msg_count < 2) {
+    /* Messages were already seeded by llm_agent_start (system, plus an
+     * optional user mission). If somehow empty, seed just the system
+     * prompt; per-turn SYSTEM STATUS user messages drive the rest. */
+    if (msg_count == 0) {
         append_msg("system", active_system_prompt(), 0);
-        char fallback[4096];
-        build_base_prompt(fallback, sizeof(fallback), 0);
-        append_msg("user", fallback, 0);
     }
 
     cJSON *tools = build_tools_json();
@@ -972,8 +943,10 @@ static void *agent_loop(void *arg) {
             msg_log("  [Bot] %s", content);
             strncpy(gl_bot_last_speech, content, sizeof(gl_bot_last_speech) - 1);
 
-            /* Interactive: check for question */
-            if (agent_interactive && strchr(content, '?')) {
+            /* Whenever the bot asks a question, pause for a typed reply.
+             * The compose box is always available; the reply dialog
+             * latches onto llm_agent_waiting_for_reply() in main.c. */
+            if (strchr(content, '?')) {
                 append_msg("assistant", content, hour);
                 const char *user_reply = wait_for_user_reply();
                 msg_log("  [User Reply] %s", user_reply);
@@ -1133,19 +1106,21 @@ done:
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
-void llm_agent_start(const char *initial_prompt, bool interactive_mode) {
+void llm_agent_start(const char *initial_prompt) {
     if (agent_running_flag) return;
     /* llama.cpp's server ignores the "model" field (it serves whatever model
        was loaded at startup), but the OpenAI-compatible schema requires the
        field to exist. We send a fixed placeholder. */
     strncpy(agent_model, "local", sizeof(agent_model) - 1);
-    agent_interactive = interactive_mode;
     agent_running_flag = true;
 
-    /* Reset messages and add initial prompt */
+    /* Reset messages and seed the conversation. The system prompt is
+     * always added; the user mission is optional — an empty initial_prompt
+     * just leaves the conversation seeded with the system prompt and lets
+     * per-turn SYSTEM STATUS messages drive everything. */
     msg_count = 0;
+    append_msg("system", active_system_prompt(), 0);
     if (initial_prompt && initial_prompt[0]) {
-        append_msg("system", active_system_prompt(), 0);
         append_msg("user", initial_prompt, 0);
     }
 

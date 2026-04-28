@@ -61,10 +61,10 @@ static const int bot_state_row[] = {
 #define BOT_STATE_SPRITES ((int)(sizeof(bot_state_col) / sizeof(bot_state_col[0])))
 
 /* ── Tile atlas (tiles.png) ──────────────────────────────────────────────── */
-/* 4x2 grid of 150x150 cells. TileType → (col,row) below. */
+/* 4x2 grid of 50x50 cells (atlas is 200x100). TileType → (col,row) below. */
 static Texture2D tiles_atlas = {0};
 static bool      tiles_atlas_loaded = false;
-#define TILES_CELL_PX 150
+#define TILES_CELL_PX 50
 
 static const int tile_col[TILE_TYPE_COUNT] = {
     [TILE_GRAVEL] = 0, [TILE_SAND] = 1, [TILE_WATER] = 2, [TILE_ROCKS] = 3,
@@ -156,7 +156,7 @@ void rendering_init(void) {
     tiles_atlas = load_exe_relative("tiles.png", "Tiles");
     tiles_atlas_loaded = tiles_atlas.id != 0;
     /* Point filter on the tile atlas: bilinear sampling at the border of each
-     * 150x150 cell bleeds pixels from the neighbouring cell, which shows up as
+     * 50x50 cell bleeds pixels from the neighbouring cell, which shows up as
      * wrong-colour seams between tiles (most visible on water/sand edges).
      * Point filtering stops the cross-cell interpolation cold. */
     if (tiles_atlas_loaded) SetTextureFilter(tiles_atlas, TEXTURE_FILTER_POINT);
@@ -274,17 +274,29 @@ void draw_game(void) {
      * GPU draw call. CMake copies tiles.png next to the binary, so this
      * branch always runs in a proper build. */
     if (tiles_atlas_loaded) {
-        /* Two anti-seam tricks for atlases drawn through a Camera2D:
-         *   1. src inset by 0.5 px: even with POINT filtering, sampling right
-         *      at x = col*150 can nudge into the previous atlas column at
-         *      certain zoom levels. A half-pixel margin is invisible for
-         *      150-px art and eliminates the bleed.
-         *   2. dst bleed by 1 world unit: adjacent tiles share an edge that
-         *      rasterises differently on either side at non-integer zoom,
-         *      leaving 1-pixel gaps. Inflating each dst by +1 unit makes
-         *      neighbours overlap by 1 world pixel so there's no gap. */
+        /* Tiles are drawn cell-for-cell with NO destination overdraw. An
+         * earlier version inflated each dst by 1 world unit to hide
+         * 1-pixel rasterisation gaps at non-integer zoom, but that broke
+         * tile content centring: the column-major draw loop draws the
+         * east-and-south neighbours AFTER the current cell, and those
+         * neighbours' overdraw covers the right/bottom 1 unit of this
+         * cell. Because DrawTexturePro maps the FULL src rect across the
+         * full inflated dst, only the LEFT/TOP 4-of-5 dst units ever
+         * appear on screen, so on every cell the source's right/bottom
+         * ~20% is invisible. For full-bleed terrain (gravel, sand, water)
+         * that's only a slight shift; for tiles whose art has a centred
+         * subject inside a frame (rocks, habitat, battery, solar_panel)
+         * it visibly shoves the subject toward the bottom-right and lets
+         * the atlas frame leak through on the top-left.
+         *
+         * Removing the dst overdraw aligns every tile's source centre
+         * with its cell centre. The 0.5 px src inset stays as a defensive
+         * margin against bilinear sampling pulling pixels from the
+         * neighbour atlas cell — the atlas uses POINT filtering today so
+         * it is mostly belt-and-braces. If gaps reappear at exotic
+         * fractional zooms, address them via pixel-snapped dst rounding
+         * instead of bringing back the asymmetric overdraw. */
         const float SRC_INSET = 0.5f;
-        const float DST_BLEED = 1.0f;
         pthread_mutex_lock(&gl_tiles_lock);
         for (int tx = tx_start; tx < tx_end; tx++) {
             for (int ty = ty_start; ty < ty_end; ty++) {
@@ -299,8 +311,8 @@ void draw_game(void) {
                 Rectangle dst = {
                     (float)(tx * TILE_SIZE),
                     (float)(ty * TILE_SIZE),
-                    (float)TILE_SIZE + DST_BLEED,
-                    (float)TILE_SIZE + DST_BLEED,
+                    (float)TILE_SIZE,
+                    (float)TILE_SIZE,
                 };
                 /* Fog of war: multiply the sampled tile colour by this
                  * tint. A much darker grey makes undiscovered terrain

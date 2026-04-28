@@ -2,27 +2,11 @@
   "_comment": "Read-only defaults. Copy changes into bots-custom.json or click 'REVERT TO DEFAULTS' in the start menu to regenerate from this file. The agent speaks compass directions (north, north-east, east, south-east, south, south-west, west, north-west) and distance buckets (adjacent|close|medium|far); no (x,y) is ever sent to the LLM. Tool-description strings may contain %d placeholders filled in from compile-time constants (move range, scan radius, rock costs); keep their number and order if editing.",
 
   "game": {
-    "default_scenario": "explorer",
-    "interactive_mode": true
-  },
-
-  "scenarios": {
-    "explorer": {
-      "rocks_amount":            20,
-      "initial_town_size":       0,
-      "energy":                  1000,
-      "inventory_rocks":         10,
-      "hours_solar_flare_every": 100,
-      "mission_prompt":          "MISSION: explore. Progress = distance covered from your start. Each turn either MoveTo(direction, distance=far) in a fresh direction, or LookFar when Known features is empty or only points behind you. Build a tiny recharge cluster (habitat+solar_panel+battery, all sharing N/E/S/W edges) only when energy<400. Any gravel, sand, or rocks tile is buildable — do not hunt for a 'better' one."
-    },
-    "builder": {
-      "rocks_amount":            100,
-      "initial_town_size":       0,
-      "energy":                  1000,
-      "inventory_rocks":         100,
-      "hours_solar_flare_every": 3000,
-      "mission_prompt":          "MISSION: build a big town. Progress = habitat tiles placed. Each turn do ONE of: (a) Create habitat/battery/solar_panel when current_tile_buildable=true and you have the rocks; (b) MoveTo(direction=<N|E|S|W>, distance=adjacent) onto the orthogonal neighbour of your last placement; (c) Dig when Current=rocks and inventory is too low. Keep clusters orthogonally connected (habitat+battery+solar_panel sharing N/E/S/W edges). Push into fresh tiles; do not revisit finished ones."
-    }
+    "rocks_amount":            50,
+    "initial_town_size":       0,
+    "energy":                  100,
+    "inventory_rocks":         10,
+    "hours_solar_flare_every": 30
   },
 
   "llama": {
@@ -32,7 +16,7 @@
   },
 
   "prompts": {
-    "system": "You drive one robot on a tile grid. Every turn: reply in AT MOST 2 short sentences, then emit exactly ONE native tool_call. No markdown, no pseudo-JSON in the content.\n\nYou never see (x,y). Each turn the user message contains:\n- SYSTEM STATUS: hour, energy, current_tile_buildable, inventory_rocks, hours_to_solar_flare, habitat_hourly_charge_active (with reason when false).\n- Neighbours: the 8 tiles touching the bot (N, NE, E, SE, S, SW, W, NW) plus Current.\n- Known features: the most recent LookFar results, each as '<type> <direction> (<bucket>)'. Missing when LookFar has never run.\n\nSTRATEGY:\n- Trust SYSTEM STATUS. It is ground truth.\n- Use the Neighbours line for any adjacent decision; only call LookFar when you need something beyond the 8 neighbours.\n- If the tile you want is visible in the current Neighbours line, use MoveTo(direction=<that label>, distance=adjacent). Do NOT use 'target=...' for something already in Neighbours — 'target' reads the older LookFar cache, which may be stale or point elsewhere.\n- Reuse Known features across turns; do not re-scan every turn.\n- Power requires habitat + battery + solar_panel that share N/E/S/W edges. Diagonals do NOT connect. ALWAYS extend clusters by MoveTo(direction=<N|E|S|W>, distance=adjacent) onto the neighbour of your last placement, then Create. distance=close walks 3 tiles and breaks adjacency.\n- Recharge on a powered habitat (habitat sharing N/E/S/W edges with both a battery and a solar_panel) by calling Wait. Wait costs 1 energy and the habitat grants +25, so each Wait nets +24 energy. DO NOT MoveTo(adjacent) to 'stay on the habitat' — MoveTo leaves the tile. To recharge to target E, call Wait repeatedly until energy >= E.\n- If energy<200 or the user asks you to recharge to a specific value, move to a powered habitat and Wait until the target is reached."
+    "system": "You drive one robot on a tile grid and your mission is to explore and survive. Every turn: reply in AT MOST 2 short sentences, then emit exactly ONE native tool_call. No markdown, no pseudo-JSON in the content.\n\nYou never see (x,y). Each turn the user message contains:\n- SYSTEM STATUS: hour, energy, current_tile_buildable, inventory_rocks, hours_to_solar_flare, habitat_hourly_charge_active (with reason when false).\n- Neighbours: the 8 tiles touching the bot (N, NE, E, SE, S, SW, W, NW) plus Current.\n- Known features: the most recent LookFar results, each as '<type> <direction> (<bucket>)'. Missing when LookFar has never run.\n\nSTRATEGY:\n- Trust SYSTEM STATUS. It is ground truth.\n- Use the Neighbours line for any adjacent decision; only call LookFar when you need something beyond the 8 neighbours.\n- If the tile you want is visible in the current Neighbours line, use MoveTo(direction=<that label>, distance=adjacent). Do NOT use 'target=...' for something already in Neighbours — 'target' reads the older LookFar cache, which may be stale or point elsewhere.\n- Reuse Known features across turns; do not re-scan every turn.\n- Power requires habitat + battery + solar_panel that share N/E/S/W edges. Diagonals do NOT connect. ALWAYS extend clusters by MoveTo(direction=<N|E|S|W>, distance=adjacent) onto the neighbour of your last placement, then Create. distance=close walks 3 tiles and breaks adjacency.\n- Recharge on a powered habitat (habitat sharing N/E/S/W edges with both a battery and a solar_panel) by calling Wait. Wait costs 1 energy and the habitat grants +25, so each Wait nets +24 energy. DO NOT MoveTo(adjacent) to 'stay on the habitat' — MoveTo leaves the tile. To recharge to target E, call Wait repeatedly until energy >= E.\n- If energy<200 or the user asks you to recharge to a specific value, move to a powered habitat and Wait until the target is reached."
 ,
     "tool_move_to":          "Walk the robot in a compass direction. Requires 'direction' plus EXACTLY ONE of: 'distance' (adjacent=1 tile, close≈3, medium≈8, far≈%d) or 'target' (a tile type the LAST LookFar reported in that same direction — fails otherwise). Use distance=adjacent when extending a power cluster so you land exactly on the N/E/S/W neighbour of the last placed structure. Costs 1 energy per tile walked. Stops at world edges.",
     "tool_look_far":         "Scan radius %d tiles. For each tile type, returns the nearest instance tagged {direction, distance bucket}. Results persist as 'Known features' in SYSTEM STATUS until that tile changes or the bot wanders off. Rocks block line-of-sight. Costs 1 energy.",
