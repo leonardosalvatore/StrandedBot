@@ -109,26 +109,44 @@ static void draw_log_panel(int x, int y, int w, int h) {
                            syslog_bg);
 }
 
-/* Top-right mirror panel: shows the most recent "[Bot] ..." line that was
- * pushed into the SYSLOG ring. Single line, clipped to the panel width.
- * Walks the full ring once per frame; cheap (<=1000 pointers). */
+/* Top-right mirror panel: shows the N most recent "[Bot] ..." lines that
+ * were pushed into the SYSLOG ring, oldest of the window on top, newest
+ * on the bottom. Acts as a fixed-size sliding window — when a new bot
+ * line arrives, the oldest of the visible 5 falls off the top. Walks the
+ * full ring once per frame; cheap (<=1000 pointers). */
 static void draw_last_bot_panel(int x, int y, int w, int h) {
+    enum { LAST_BOT_LINES = 5 };
     static const char *ring_view[MSG_LOG_MAX_LINES];
     int n = msg_log_get(ring_view, MSG_LOG_MAX_LINES);
-    const char *latest = NULL;
-    for (int i = n - 1; i >= 0; i--) {
+
+    /* Collect up to LAST_BOT_LINES "[Bot] ..." hits from the ring,
+     * walking newest-to-oldest so we stop as soon as the window is full.
+     * recent[0] is the newest, recent[found-1] is the oldest still kept. */
+    const char *recent[LAST_BOT_LINES] = { 0 };
+    int found = 0;
+    for (int i = n - 1; i >= 0 && found < LAST_BOT_LINES; i--) {
         const char *s = ring_view[i];
         if (!s) continue;
         /* The bot's own lines are logged as "  [Bot] <content>". Accept
          * both with and without the leading indent, for resilience. */
         const char *hit = strstr(s, "[Bot] ");
-        if (hit) { latest = hit + strlen("[Bot] "); break; }
+        if (hit) recent[found++] = hit + strlen("[Bot] ");
     }
-    char buf[512];
-    if (latest && latest[0]) {
-        snprintf(buf, sizeof(buf), "> %s", latest);
-    } else {
+
+    char buf[2560] = "";
+    if (found == 0) {
         snprintf(buf, sizeof(buf), "> (waiting for bot...)");
+    } else {
+        /* Render oldest-first so the visual order matches SYSLOG: a fresh
+         * message slides in at the bottom and pushes the oldest off the
+         * top of the visible window. */
+        int off = 0;
+        for (int i = found - 1; i >= 0; i--) {
+            int n2 = snprintf(buf + off, sizeof(buf) - off,
+                              "> %s%s", recent[i], i > 0 ? "\n" : "");
+            if (n2 < 0 || n2 >= (int)sizeof(buf) - off) break;
+            off += n2;
+        }
     }
     draw_hud_text_panel(x, y, w, h, "LAST BOT", buf, /*wrap=*/false);
 }
@@ -481,11 +499,13 @@ int main(int argc, char **argv) {
             int log_w = (int)(full_w * 0.70f);      /* 30% narrower */
             int side_w = 310;
             draw_stats_panel(pad, pad, side_w, top_h);
-            /* Top-right: one-line mirror of the latest [Bot] message.
-             * 3x the TELEMETRY width, much shorter in height. Clamped
-             * so it never overlaps the TELEMETRY panel. */
+            /* Top-right: rolling window of the last 5 [Bot] messages.
+             * 3x the TELEMETRY width; tall enough to render 5 lines plus
+             * the title plate (~22px) and bottom inset (~8px), at the
+             * default raygui line spacing. Clamped so it never overlaps
+             * the TELEMETRY panel. */
             int bot_line_w = side_w * 3;
-            int bot_line_h = 56;
+            int bot_line_h = 140;
             int max_bot_line_w = sw - (pad + side_w + 12) - pad;
             if (bot_line_w > max_bot_line_w) bot_line_w = max_bot_line_w;
             if (bot_line_w > 200) {
