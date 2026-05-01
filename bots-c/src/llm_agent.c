@@ -250,23 +250,25 @@ static cJSON *build_tools_json(void) {
 
     /* Pull tool-description templates from the active config (if any);
      * fallbacks match the previously hardcoded strings so the agent still
-     * works before main() sets the active config. All descriptions now
-     * speak compass directions and distance buckets; no (x,y). */
+     * works before main() sets the active config. All descriptions speak
+     * compass directions and integer tile distances; no (x,y). */
     const BotsConfig *cfg = config_active();
     const char *t_move =
         (cfg && cfg->prompts.tool_move_to[0])
             ? cfg->prompts.tool_move_to
             : "Walk the bot in a compass direction. Supply 'direction' plus "
-              "EXACTLY ONE of 'distance' (close|medium|far) or 'target' "
-              "(a tile type the last LookFar reported in that direction). "
-              "Up to %d tiles per call; costs 1 energy per tile.";
+              "EXACTLY ONE of 'distance' (integer tile count, 1 = adjacent "
+              "neighbour, up to %d) or 'target' (a tile type the last "
+              "LookFar reported in that direction). Costs 1 energy per "
+              "tile walked.";
     const char *t_look_far =
         (cfg && cfg->prompts.tool_look_far[0])
             ? cfg->prompts.tool_look_far
-            : "Wide scan radius %d tiles. Returns nearest feature per tile "
-              "type, each tagged with direction (north, north-east, ...) and "
-              "distance bucket (close|medium|far). Rock fields block "
-              "line-of-sight. Costs 1 energy.";
+            : "Wide scan radius %d tiles. Returns the nearest feature of "
+              "every tile type, each tagged with direction (north, "
+              "north-east, ...) and distance_tiles (integer Chebyshev "
+              "distance from the bot). Rock fields block line-of-sight. "
+              "Costs 1 energy.";
     const char *t_dig =
         (cfg && cfg->prompts.tool_dig[0])
             ? cfg->prompts.tool_dig
@@ -283,7 +285,8 @@ static cJSON *build_tools_json(void) {
         (cfg && cfg->prompts.tool_list_built_tiles[0])
             ? cfg->prompts.tool_list_built_tiles
             : "Returns every structure the bot placed via Create, each with "
-              "direction and distance relative to the bot now. Costs 1 energy.";
+              "direction and distance_tiles (integer Chebyshev distance) "
+              "relative to the bot now. Costs 1 energy.";
     const char *t_wait =
         (cfg && cfg->prompts.tool_wait[0])
             ? cfg->prompts.tool_wait
@@ -328,17 +331,16 @@ static cJSON *build_tools_json(void) {
         cJSON_AddItemToObject(props, "direction", pd);
 
         cJSON *pdist = cJSON_CreateObject();
-        cJSON_AddStringToObject(pdist, "type", "string");
-        cJSON_AddStringToObject(pdist, "description",
-            "How far to walk: adjacent=1 tile (use for cluster extension), "
-            "close~=3, medium~=8, far~=20. Exactly one of 'distance' or "
-            "'target' must be present.");
-        cJSON *pdist_enum = cJSON_CreateArray();
-        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("adjacent"));
-        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("close"));
-        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("medium"));
-        cJSON_AddItemToArray(pdist_enum, cJSON_CreateString("far"));
-        cJSON_AddItemToObject(pdist, "enum", pdist_enum);
+        cJSON_AddStringToObject(pdist, "type", "integer");
+        char dist_desc[256];
+        snprintf(dist_desc, sizeof(dist_desc),
+            "How many tiles to walk in that direction. Integer, 1 = the "
+            "immediate neighbour (use for cluster extension), up to %d = "
+            "the LookFar scan radius. Exactly one of 'distance' or "
+            "'target' must be present.", MOVE_MAX_TILES);
+        cJSON_AddStringToObject(pdist, "description", dist_desc);
+        cJSON_AddNumberToObject(pdist, "minimum", 1);
+        cJSON_AddNumberToObject(pdist, "maximum", MOVE_MAX_TILES);
         cJSON_AddItemToObject(props, "distance", pdist);
 
         cJSON *ptgt = cJSON_CreateObject();
@@ -580,7 +582,6 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
         cJSON *jdist = cJSON_GetObjectItem(args, "distance");
         cJSON *jtgt = cJSON_GetObjectItem(args, "target");
         const char *dir_s = (jdir && cJSON_IsString(jdir)) ? jdir->valuestring : NULL;
-        const char *dist_s = (jdist && cJSON_IsString(jdist)) ? jdist->valuestring : NULL;
         const char *tgt_s = (jtgt && cJSON_IsString(jtgt)) ? jtgt->valuestring : NULL;
 
         ToolResult r = {0};
@@ -591,8 +592,32 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
                 "west, north-west).\"}");
             return r;
         }
-        bool has_dist = (dist_s && dist_s[0]);
-        bool has_tgt  = (tgt_s  && tgt_s[0]);
+        /* `distance` is now a plain integer (tile count). Accept JSON
+         * numbers OR numeric strings — small models occasionally quote the
+         * value. Anything else is a hard error. */
+        bool has_dist = false;
+        int  dist_tiles = 0;
+        if (jdist) {
+            if (cJSON_IsNumber(jdist)) {
+                dist_tiles = (int)(jdist->valuedouble + 0.5);
+                has_dist = true;
+            } else if (cJSON_IsString(jdist) && jdist->valuestring &&
+                       jdist->valuestring[0]) {
+                char *endp = NULL;
+                long v = strtol(jdist->valuestring, &endp, 10);
+                if (endp && endp != jdist->valuestring && *endp == '\0') {
+                    dist_tiles = (int)v;
+                    has_dist = true;
+                } else {
+                    snprintf(r.json, TOOL_RESULT_MAX_LEN,
+                        "{\"ok\":false,\"error\":\"MoveTo 'distance' must be "
+                        "an integer tile count (1-%d), got '%s'.\"}",
+                        MOVE_MAX_TILES, jdist->valuestring);
+                    return r;
+                }
+            }
+        }
+        bool has_tgt = (tgt_s && tgt_s[0]);
         if (has_dist && has_tgt) {
             snprintf(r.json, TOOL_RESULT_MAX_LEN,
                 "{\"ok\":false,\"error\":\"MoveTo needs exactly one of "
@@ -601,9 +626,9 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
         }
         if (!has_dist && !has_tgt) {
             snprintf(r.json, TOOL_RESULT_MAX_LEN,
-                "{\"ok\":false,\"error\":\"MoveTo needs 'distance' "
-                "(adjacent|close|medium|far) or 'target' (a tile type "
-                "seen in the last LookFar).\"}");
+                "{\"ok\":false,\"error\":\"MoveTo needs 'distance' (integer "
+                "tile count, 1-%d) or 'target' (a tile type seen in the "
+                "last LookFar).\"}", MOVE_MAX_TILES);
             return r;
         }
         Direction dir = direction_from_name(dir_s);
@@ -613,14 +638,17 @@ static ToolResult dispatch_tool(const char *name, cJSON *args) {
             return r;
         }
         if (has_dist) {
-            DistBucket db = dist_bucket_from_name(dist_s);
-            if (db == DIST_NONE) {
+            /* Clamp at the dispatcher boundary so the gl_* helpers see only
+             * legal values. Out-of-range explicitly fails so the LLM gets a
+             * clear diagnostic rather than a silently truncated walk. */
+            if (dist_tiles < 1 || dist_tiles > MOVE_MAX_TILES) {
                 snprintf(r.json, TOOL_RESULT_MAX_LEN,
-                    "{\"ok\":false,\"error\":\"Unknown distance '%s' (use "
-                    "adjacent, close, medium, or far).\"}", dist_s);
+                    "{\"ok\":false,\"error\":\"MoveTo 'distance' must be an "
+                    "integer between 1 and %d (got %d).\"}",
+                    MOVE_MAX_TILES, dist_tiles);
                 return r;
             }
-            return gl_move_direction_bucket(dir, db);
+            return gl_move_direction_tiles(dir, dist_tiles);
         }
         /* has_tgt */
         TileType tt = tile_type_from_name(tgt_s);
@@ -678,7 +706,7 @@ static const char *SYSTEM_PROMPT_FALLBACK =
     "You act by calling ONE tool per turn via native tool_calls. The bot "
     "never sees raw coordinates; it reasons in compass directions "
     "(north, north-east, east, south-east, south, south-west, west, "
-    "north-west) and distance buckets (adjacent|close|medium|far).\n"
+    "north-west) and integer tile distances.\n"
     "\n"
     "OUTPUT STYLE (strict):\n"
     "- Reply in AT MOST 2 short sentences, then emit exactly ONE tool call.\n"
@@ -693,20 +721,20 @@ static const char *SYSTEM_PROMPT_FALLBACK =
     "  Use it to pick an orthogonally-adjacent Create target or a\n"
     "  one-step MoveTo without burning a LookFar.\n"
     "- MoveTo needs a 'direction' plus EXACTLY ONE of:\n"
-    "    * 'distance' in {adjacent, close, medium, far} — walks that bucket\n"
-    "      in that direction (adjacent=1 tile, close≈3, medium≈8, far≈20),\n"
-    "      or\n"
+    "    * 'distance' — INTEGER tile count, 1 = the immediate neighbour\n"
+    "      (use this to extend a power cluster), up to the LookFar\n"
+    "      scan radius. Costs 1 energy per tile walked.\n"
     "    * 'target' — a tile type the most recent LookFar reported in that\n"
     "      same direction. If the cache is empty or the feature is in a\n"
     "      different direction, call LookFar first.\n"
     "- LookFar reveals the nearest feature of every type within the scan\n"
-    "  radius and tags each with direction + distance bucket. Its results\n"
-    "  are kept as 'Known features' until you act in a way that changes\n"
-    "  those tiles (Dig, Create) or the bot wanders out of range. Do NOT\n"
-    "  call LookFar every turn — re-use the Known features list.\n"
+    "  radius and tags each with direction and distance_tiles (integer).\n"
+    "  Results are kept as 'Known features' until you act in a way that\n"
+    "  changes those tiles (Dig, Create) or the bot wanders out of range.\n"
+    "  Do NOT call LookFar every turn — re-use the Known features list.\n"
     "- If the tile you want is already visible in the current Neighbours\n"
-    "  line, use MoveTo(direction=<that label>, distance=adjacent). Do NOT\n"
-    "  use 'target=...' for something in Neighbours — 'target' reads the\n"
+    "  line, use MoveTo(direction=<that label>, distance=1). Do NOT use\n"
+    "  'target=...' for something in Neighbours — 'target' reads the\n"
     "  older LookFar cache and may point elsewhere or be stale.\n"
     "- Dig is only useful when you need more rocks for a PLANNED Create.\n"
     "  Rocks have no value beyond building, so don't hoard past what your\n"
@@ -727,7 +755,7 @@ static const char *SYSTEM_PROMPT_FALLBACK =
     "- Recharge on a POWERED habitat (habitat whose N/E/S/W neighbours\n"
     "  include both a battery and a solar_panel) by calling Wait. The\n"
     "  habitat grants +25 energy per hour, Wait costs 1, so Wait nets\n"
-    "  +24/hour. DO NOT MoveTo(adjacent) to 'stay' — MoveTo leaves the\n"
+    "  +24/hour. DO NOT MoveTo(distance=1) to 'stay' — MoveTo leaves the\n"
     "  tile. To recharge to a target E, call Wait repeatedly until\n"
     "  energy >= E.\n"
     "- If energy<200 or the user asks you to recharge to a specific\n"

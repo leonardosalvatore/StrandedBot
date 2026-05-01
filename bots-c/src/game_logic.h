@@ -23,14 +23,12 @@
 #define BOT_RADIUS      10
 #define BOT_SPEED       220
 #define BOT_MOVE_SPEED  (TILE_SIZE * 2)
-/* Per-call MoveTo cap. Also defines what `distance=far` walks (see
- * dist_bucket_walk_tiles). 40 so a single explore
- * order from the operator ("go east really far") covers a useful
- * fraction of the map in one tool call instead of forcing the bot to
- * stitch dozens of short hops together — each of which previously
- * re-exposed the bot to the "Habitat west, return home" temptation
- * baked into per-turn Known features. Costs 1 energy per tile walked,
- * so the operator must have built reserves before issuing far moves. */
+/* Per-call MoveTo cap, in tiles. The LLM passes a numeric `distance` to
+ * MoveTo; the dispatcher clamps to [1, MOVE_MAX_TILES] before walking,
+ * so a single tool call can never burn more than this many energy units
+ * on movement alone. Set to match gl_bot_lookfar_distance so the bot can
+ * walk anywhere its scan radius could see in a single call. Costs 1
+ * energy per tile walked. */
 #define MOVE_MAX_TILES  40
 
 /* ── Default new-game values ─────────────────────────────────────────────── */
@@ -96,32 +94,15 @@ typedef enum {
     DIR_COUNT
 } Direction;
 
-/* Distance buckets replace numeric tile counts in every LLM-facing string.
- *   adjacent : exactly 1 tile (orthogonal N/E/S/W or diagonal NE/NW/SE/SW
- *              neighbour of the bot; used for cluster extension)
- *   close    : 2-5 tiles
- *   medium   : 6-15 tiles
- *   far      : 16+ tiles (a far-bucket move walks up to MOVE_MAX_TILES,
- *              currently 100; intermediate buckets keep their old
- *              suggested step sizes — see dist_bucket_walk_tiles) */
-typedef enum {
-    DIST_NONE = 0,
-    DIST_ADJACENT,
-    DIST_CLOSE,
-    DIST_MEDIUM,
-    DIST_FAR,
-    DIST_COUNT
-} DistBucket;
+/* Distance is reported as plain integer tile counts (Chebyshev distance
+ * from the bot's current grid cell). Buckets used to be the LLM-facing
+ * vocabulary but small models did better with concrete numbers, so the
+ * API now passes distance as plain integers throughout. */
 
 const char *direction_name(Direction d);            /* e.g. "north-east" */
 Direction   direction_from_delta(int dx, int dy);   /* 8-bin atan2 */
 Direction   direction_from_name(const char *s);     /* parses many forms */
 void        direction_unit(Direction d, int *dx, int *dy);
-
-const char *dist_bucket_name(DistBucket b);         /* "close" */
-DistBucket  dist_bucket_from_tiles(int tiles);      /* thresholds */
-int         dist_bucket_walk_tiles(DistBucket b);   /* suggested step size */
-DistBucket  dist_bucket_from_name(const char *s);
 
 /* ── Global world state (accessed from multiple threads; use gl_tiles_lock) ─ */
 extern Tile         gl_tile_matrix[GRID_WIDTH][GRID_HEIGHT];
@@ -167,7 +148,10 @@ void  gl_update(float dt);
 
 /* Tools */
 ToolResult gl_move_to(int target_x, int target_y);
-ToolResult gl_move_direction_bucket(Direction dir, DistBucket dist);
+/* Walk `tiles` cells along `dir`. Caller is expected to have already
+ * clamped `tiles` into [1, MOVE_MAX_TILES]; the function asserts the
+ * range and returns an error ToolResult on violation. */
+ToolResult gl_move_direction_tiles(Direction dir, int tiles);
 ToolResult gl_move_direction_target(Direction dir, TileType target_type);
 ToolResult gl_look_close(void);
 ToolResult gl_look_far(void);
@@ -184,7 +168,7 @@ void gl_build_neighbours_line(char *out, size_t cap);
 
 /* Known-features summary populated from the last LookFar; empty string
  * when the cache is empty. Each kept entry becomes one sentence, e.g.
- * "Rocks south-west (close). Water north (medium)." */
+ * "Rocks south-west (3 tiles). Water north (12 tiles)." */
 void gl_build_known_features_summary(char *out, size_t cap);
 
 /* Solar flare / hour */

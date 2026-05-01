@@ -202,61 +202,24 @@ Direction direction_from_name(const char *s) {
     return DIR_NONE;
 }
 
-/* Centralised bucket thresholds. Tuning here updates both LookFar labels
- * and MoveTo step sizes. */
-const char *dist_bucket_name(DistBucket b) {
-    switch (b) {
-        case DIST_ADJACENT: return "adjacent";
-        case DIST_CLOSE:    return "close";
-        case DIST_MEDIUM:   return "medium";
-        case DIST_FAR:      return "far";
-        default:            return "none";
-    }
-}
-
-DistBucket dist_bucket_from_tiles(int tiles) {
-    if (tiles <= 0) return DIST_NONE;
-    if (tiles <= 1) return DIST_ADJACENT;
-    if (tiles <= 5) return DIST_CLOSE;
-    if (tiles <= 15) return DIST_MEDIUM;
-    return DIST_FAR;
-}
-
-int dist_bucket_walk_tiles(DistBucket b) {
-    switch (b) {
-        case DIST_ADJACENT: return 1;
-        case DIST_CLOSE:    return 3;
-        case DIST_MEDIUM:   return 8;
-        case DIST_FAR:      return MOVE_MAX_TILES;
-        default:            return 0;
-    }
-}
-
-DistBucket dist_bucket_from_name(const char *s) {
-    if (!s || !s[0]) return DIST_NONE;
-    char norm[16] = {0};
-    size_t w = 0;
-    for (size_t i = 0; s[i] && w < sizeof(norm) - 1; i++) {
-        char c = s[i];
-        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        norm[w++] = c;
-    }
-    norm[w] = '\0';
-    if (!strcmp(norm, "adjacent") || !strcmp(norm, "adj") ||
-        !strcmp(norm, "next")) return DIST_ADJACENT;
-    if (!strcmp(norm, "close") || !strcmp(norm, "near")) return DIST_CLOSE;
-    if (!strcmp(norm, "medium") || !strcmp(norm, "mid")) return DIST_MEDIUM;
-    if (!strcmp(norm, "far")) return DIST_FAR;
-    return DIST_NONE;
+/* Chebyshev distance in tiles between two grid cells. Used by everything
+ * that needs to report a distance to the LLM. */
+static int tile_distance(int ax, int ay, int bx, int by) {
+    int adx = ax > bx ? ax - bx : bx - ax;
+    int ady = ay > by ? ay - by : by - ay;
+    return adx > ady ? adx : ady;
 }
 
 /* ── Feature memory (last LookFar cache) ─────────────────────────────────── */
+/* Only the absolute (x,y) of the nearest feature of each type is cached.
+ * Direction and tile-distance are recomputed against the bot's current
+ * position whenever they're needed (Known features summary, MoveTo
+ * target=...). That way the bot always reads up-to-date geometry no
+ * matter how far it has moved since the LookFar that produced the entry. */
 typedef struct {
-    bool       valid;
-    int        x, y;
-    Direction  dir;
-    DistBucket dist;
-    int        game_hour;
+    bool valid;
+    int  x, y;
+    int  game_hour;
 } KnownFeature;
 
 static KnownFeature gl_last_lookfar[TILE_TYPE_COUNT];
@@ -603,16 +566,21 @@ void gl_build_neighbours_line(char *out, size_t cap) {
             direction_unit(order[i], &dx, &dy);
             int x = gx + dx, y = gy + dy;
             TileType t = types[i];
-            /* Pass 1 (diagonals): do not clobber an orthogonal adjacent
-             * entry just written by pass 0. */
+            /* Pass 1 (diagonals): do not clobber an orthogonal entry just
+             * written by pass 0 in the same turn. We detect that by both
+             * the game_hour stamp AND the cached cell being one of the
+             * orthogonal neighbours; that's enough to break ties without
+             * needing a separate "is this adjacent" flag. */
             if (pass == 1 && gl_last_lookfar[t].valid &&
-                gl_last_lookfar[t].dist == DIST_ADJACENT &&
                 gl_last_lookfar[t].game_hour == gl_bot_hour_count) {
-                continue;
+                int cx = gl_last_lookfar[t].x - gx;
+                int cy = gl_last_lookfar[t].y - gy;
+                int axc = cx < 0 ? -cx : cx;
+                int ayc = cy < 0 ? -cy : cy;
+                if (axc + ayc == 1) continue;  /* orthogonal neighbour */
             }
             gl_last_lookfar[t] = (KnownFeature){
                 .valid = true, .x = x, .y = y,
-                .dir = order[i], .dist = DIST_ADJACENT,
                 .game_hour = gl_bot_hour_count,
             };
         }
@@ -660,12 +628,7 @@ void gl_build_known_features_summary(char *out, size_t cap) {
             gl_last_lookfar[i].valid = false;
             continue;
         }
-        Direction  dir  = direction_from_delta(ddx, ddy);
-        DistBucket dist = dist_bucket_from_tiles(cheb);
-        /* Refresh the cache so MoveTo(target=...) sees the same direction
-         * the LLM just read in the summary. */
-        gl_last_lookfar[i].dir  = dir;
-        gl_last_lookfar[i].dist = dist;
+        Direction dir = direction_from_delta(ddx, ddy);
 
         /* Capitalise the first letter of the tile name for prose. */
         const char *name = tile_type_name((TileType)i);
@@ -673,11 +636,12 @@ void gl_build_known_features_summary(char *out, size_t cap) {
         snprintf(Name, sizeof(Name), "%s", name);
         if (Name[0] >= 'a' && Name[0] <= 'z') Name[0] = (char)(Name[0] - 'a' + 'A');
         int n = snprintf(out + w, cap - w,
-            "%s%s %s (%s).",
+            "%s%s %s (%d %s).",
             any ? " " : "",
             Name,
             direction_name(dir),
-            dist_bucket_name(dist));
+            cheb,
+            cheb == 1 ? "tile" : "tiles");
         if (n < 0 || (size_t)n >= cap - w) { out[cap-1] = '\0'; return; }
         w += (size_t)n;
         any = true;
@@ -910,10 +874,11 @@ ToolResult gl_move_to(int target_x, int target_y) {
     return res;
 }
 
-/* MoveTo(direction, distance_bucket): walk up to the bucket's step count
- * along the 8-way compass vector. Clamps to world bounds; gl_move_to
- * handles the actual tile-by-tile traversal. */
-ToolResult gl_move_direction_bucket(Direction dir, DistBucket dist) {
+/* MoveTo(direction, distance_in_tiles): walk exactly `tiles` cells along
+ * the 8-way compass vector. The dispatcher in llm_agent.c clamps to
+ * [1, MOVE_MAX_TILES] before calling, so this function rejects out-of-
+ * range values rather than silently re-clamping. */
+ToolResult gl_move_direction_tiles(Direction dir, int tiles) {
     ToolResult res = {0};
     if (dir == DIR_NONE) {
         tool_result_err(&res,
@@ -921,26 +886,27 @@ ToolResult gl_move_direction_bucket(Direction dir, DistBucket dist) {
             "south, south-west, west, or north-west).");
         return res;
     }
-    if (dist == DIST_NONE) {
-        tool_result_err(&res,
-            "MoveTo needs either 'distance' (adjacent|close|medium|far) "
-            "or 'target' (a tile type seen in the last LookFar).");
+    if (tiles < 1 || tiles > MOVE_MAX_TILES) {
+        char err[160];
+        snprintf(err, sizeof(err),
+            "MoveTo 'distance' must be an integer between 1 and %d (got %d).",
+            MOVE_MAX_TILES, tiles);
+        tool_result_err(&res, err);
         return res;
     }
     int ux = 0, uy = 0;
     direction_unit(dir, &ux, &uy);
-    int steps = dist_bucket_walk_tiles(dist);
     int start_gx, start_gy;
     gl_bot_grid_pos(&start_gx, &start_gy);
-    int tx = start_gx + ux * steps;
-    int ty = start_gy + uy * steps;
+    int tx = start_gx + ux * tiles;
+    int ty = start_gy + uy * tiles;
     return gl_move_to(tx, ty);
 }
 
 /* MoveTo(direction, target_type): requires a prior LookFar to have cached
- * the feature. Also requires the cached direction to be in the same
- * octant as the requested one, so bad asks get a clear, targeted error
- * instead of silently redirecting the bot somewhere wrong. */
+ * the feature. The cached direction is recomputed from the stored (x,y)
+ * against the bot's CURRENT position, so the octant check stays accurate
+ * even if the bot has moved a few tiles since LookFar ran. */
 ToolResult gl_move_direction_target(Direction dir, TileType target_type) {
     ToolResult res = {0};
     if (dir == DIR_NONE) {
@@ -962,22 +928,26 @@ ToolResult gl_move_direction_target(Direction dir, TileType target_type) {
         tool_result_err(&res, err);
         return res;
     }
-    if (gl_last_lookfar[target_type].dir != dir) {
+    int fx = gl_last_lookfar[target_type].x;
+    int fy = gl_last_lookfar[target_type].y;
+    int bgx, bgy;
+    gl_bot_grid_pos(&bgx, &bgy);
+    Direction cached_dir = direction_from_delta(fx - bgx, fy - bgy);
+    int cached_tiles = tile_distance(bgx, bgy, fx, fy);
+    if (cached_dir != dir) {
         char err[256];
         snprintf(err, sizeof(err),
-            "The known %s is %s (%s), not %s. Use MoveTo(direction=%s, "
+            "The known %s is %s (%d %s), not %s. Use MoveTo(direction=%s, "
             "target=%s) or call LookFar again.",
             tile_type_name(target_type),
-            direction_name(gl_last_lookfar[target_type].dir),
-            dist_bucket_name(gl_last_lookfar[target_type].dist),
+            direction_name(cached_dir),
+            cached_tiles, cached_tiles == 1 ? "tile" : "tiles",
             direction_name(dir),
-            direction_name(gl_last_lookfar[target_type].dir),
+            direction_name(cached_dir),
             tile_type_name(target_type));
         tool_result_err(&res, err);
         return res;
     }
-    int fx = gl_last_lookfar[target_type].x;
-    int fy = gl_last_lookfar[target_type].y;
     return gl_move_to(fx, fy);
 }
 
@@ -1095,33 +1065,32 @@ ToolResult gl_look_far(void) {
     for (int i = 0; i < TILE_TYPE_COUNT; i++) {
         if (best[i].dist > 1e8f) continue;
         int ddx = best[i].x - gx, ddy = best[i].y - gy;
-        Direction  dir  = direction_from_delta(ddx, ddy);
-        int        tiles = (int)(best[i].dist + 0.5f);
+        Direction   dir   = direction_from_delta(ddx, ddy);
+        int         tiles = tile_distance(gx, gy, best[i].x, best[i].y);
         if (tiles < 1) tiles = 1;
-        DistBucket dist = dist_bucket_from_tiles(tiles);
         const char *type_name = tile_type_name(best[i].type);
 
         gl_last_lookfar[i] = (KnownFeature){
             .valid = true,
             .x = best[i].x, .y = best[i].y,
-            .dir = dir, .dist = dist,
             .game_hour = gl_bot_hour_count,
         };
 
         flen += snprintf(features + flen, sizeof(features) - flen,
-            "%s{\"type\":\"%s\",\"direction\":\"%s\",\"distance\":\"%s\"}",
+            "%s{\"type\":\"%s\",\"direction\":\"%s\",\"distance_tiles\":%d}",
             flen > 1 ? "," : "",
             type_name,
             direction_name(dir),
-            dist_bucket_name(dist));
+            tiles);
 
         char Name[32];
         snprintf(Name, sizeof(Name), "%s", type_name);
         if (Name[0] >= 'a' && Name[0] <= 'z') Name[0] = (char)(Name[0] - 'a' + 'A');
         int n = snprintf(summary + slen, sizeof(summary) - slen,
-            "%s%s %s (%s).",
+            "%s%s %s (%d %s).",
             any_feature ? " " : "",
-            Name, direction_name(dir), dist_bucket_name(dist));
+            Name, direction_name(dir),
+            tiles, tiles == 1 ? "tile" : "tiles");
         if (n > 0 && (size_t)n < sizeof(summary) - slen) slen += (size_t)n;
         any_feature = true;
     }
@@ -1287,18 +1256,17 @@ ToolResult gl_list_built_tiles(void) {
     for (int i = 0; i < n && blen < 1300; i++) {
         int ddx = gl_bot_built[i].x - gx;
         int ddy = gl_bot_built[i].y - gy;
-        Direction  dir = direction_from_delta(ddx, ddy);
-        int        tiles = (int)(sqrtf((float)(ddx*ddx + ddy*ddy)) + 0.5f);
-        DistBucket dist = (ddx == 0 && ddy == 0) ? DIST_CLOSE
-                                                 : dist_bucket_from_tiles(tiles);
+        Direction dir   = direction_from_delta(ddx, ddy);
+        int       tiles = tile_distance(gx, gy, gl_bot_built[i].x,
+                                                gl_bot_built[i].y);
         counts[gl_bot_built[i].type]++;
         blen += snprintf(built_arr + blen, sizeof(built_arr) - blen,
-            "%s{\"type\":\"%s\",\"direction\":\"%s\",\"distance\":\"%s\","
+            "%s{\"type\":\"%s\",\"direction\":\"%s\",\"distance_tiles\":%d,"
             "\"game_hour\":%d}",
             blen > 1 ? "," : "",
             tile_type_name(gl_bot_built[i].type),
             (dir == DIR_NONE) ? "here" : direction_name(dir),
-            dist_bucket_name(dist),
+            tiles,
             gl_bot_built[i].game_hour);
     }
     pthread_mutex_unlock(&gl_built_lock);
