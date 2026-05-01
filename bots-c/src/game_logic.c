@@ -12,8 +12,13 @@
 Tile            gl_tile_matrix[GRID_WIDTH][GRID_HEIGHT];
 pthread_mutex_t gl_tiles_lock = PTHREAD_MUTEX_INITIALIZER;
 
-float   gl_bot_x = 400.0f, gl_bot_y = 550.0f;
-float   gl_bot_target_x = 400.0f, gl_bot_target_y = 550.0f;
+/* Bot starts at the centre of the grid. World pixel coords = grid cell *
+ * TILE_SIZE; concrete numbers (e.g. 700, 412) fall out of GRID_WIDTH/2 *
+ * TILE_SIZE so the spawn auto-adjusts if the map dimensions change. */
+float   gl_bot_x = (GRID_WIDTH  / 2) * (float)TILE_SIZE,
+        gl_bot_y = (GRID_HEIGHT / 2) * (float)TILE_SIZE;
+float   gl_bot_target_x = (GRID_WIDTH  / 2) * (float)TILE_SIZE,
+        gl_bot_target_y = (GRID_HEIGHT / 2) * (float)TILE_SIZE;
 int     gl_bot_energy = STARTING_BOT_ENERGY;
 int     gl_bot_inventory_rocks = STARTING_INVENTORY_ROCKS;
 BotState gl_bot_state = BOT_WAITING;
@@ -513,7 +518,8 @@ static void initialize_default_tiles(void) {
     pthread_mutex_unlock(&gl_tiles_lock);
 }
 
-static int gl_spawn_gx_cache = 100, gl_spawn_gy_cache = 137;
+static int gl_spawn_gx_cache = GRID_WIDTH  / 2,
+           gl_spawn_gy_cache = GRID_HEIGHT / 2;
 
 void gl_bot_spawn_grid_pos(int *gx, int *gy) {
     if (gx) *gx = gl_spawn_gx_cache;
@@ -529,8 +535,10 @@ void gl_initialize_world(bool use_fog, int rocks_target) {
     gl_solar_flare_animation_active = false;
     gl_bot_state = BOT_WAITING;
     gl_bot_last_speech[0] = '\0';
-    gl_bot_x = 400.0f; gl_bot_y = 550.0f;
-    gl_bot_target_x = 400.0f; gl_bot_target_y = 550.0f;
+    gl_bot_x = (GRID_WIDTH  / 2) * (float)TILE_SIZE;
+    gl_bot_y = (GRID_HEIGHT / 2) * (float)TILE_SIZE;
+    gl_bot_target_x = gl_bot_x;
+    gl_bot_target_y = gl_bot_y;
     gl_spawn_gx_cache = (int)gl_bot_x / TILE_SIZE;
     gl_spawn_gy_cache = (int)gl_bot_y / TILE_SIZE;
 
